@@ -6,6 +6,74 @@ in `docs/TASKS.md`.
 
 Nieuwste notitie bovenaan.
 
+## [FIX] Voorraadpagina: pure helpers uit client-module gehaald — 2026-09-22
+**Status:** klaar voor review
+
+**Aangemaakte bestanden:**
+- `src/app/(app)/onderdelen/search-params.ts`
+
+**Gewijzigde bestanden:**
+- `src/app/(app)/onderdelen/PartsFilters.tsx`
+- `src/app/(app)/onderdelen/page.tsx`
+- `src/app/(app)/onderdelen/PartsPagination.tsx`
+- `src/lib/__tests__/parts-overview.test.ts`
+- `docs/PROGRESS.md` (deze notitie)
+
+**Wat er kapot was:** `/onderdelen` crashte bij elk bezoek met `Error: Attempted to
+call normalizeSearchParams() from the server but normalizeSearchParams is on the
+client. It's not possible to invoke a client function from the server, it can only be
+rendered as a Component or passed to props of a Client Component.` `PartsFilters.tsx`
+begint met `"use client"`, maar exporteerde naast het component ook pure hulpfuncties
+(`RawSearchParams`, `firstParam`, `normalizeSearchParams`, `UNBRANDED_FILTER_VALUE`,
+`GROUP_BY_BRAND_VALUE`, `parsePartsSearchParams`, `buildPartsQuery`). Next.js maakt van
+élke export uit een `"use client"`-module een client-referentie — ook van gewone
+functies en constanten, niet alleen componenten — dus de servercomponent `page.tsx` kon
+die functies niet rechtstreeks aanroepen. Hetzelfde patroon zat al eens eerder in dit
+project bij `"use server"`-bestanden (zie de T16- en de daaropvolgende notitie
+hierboven); dit is de spiegelversie ervan bij `"use client"`.
+
+**Oplossing:** de pure logica ongewijzigd verplaatst naar een nieuw bestand zonder
+`"use client"` (`search-params.ts`). `PartsFilters.tsx` houdt alleen het client
+component (`PartsFilters`, `PartsFiltersProps`) over en importeert wat het nodig heeft
+uit `./search-params`, zonder die functies opnieuw te exporteren (een re-export uit een
+`"use client"`-module geeft dezelfde fout terug). `page.tsx` en `PartsPagination.tsx`
+importeren nu rechtstreeks uit `./search-params`; de test
+`src/lib/__tests__/parts-overview.test.ts` idem. Geen wijziging aan gedrag, opmaak of
+queries — uitsluitend de client/server-scheiding.
+
+**Audit elders:** alle `"use client"`-bestanden onder `src/app/**` gecontroleerd op
+dezelfde fout (niet-Component-exports die door een servercomponent worden aangeroepen),
+met nadruk op rapportages, verkoop, leveranciers, merken en onderdelen.
+`src/app/(app)/rapportages/report-filters.ts` bleek al correct gescheiden: het heeft
+geen `"use client"`, en zowel de servercomponent (`page.tsx`) als het client component
+(`ReportsFilters.tsx`) en de CSV-export-route (`export/route.ts`) importeren de pure
+functies (`normalizeSearchParams`, `buildReportsQuery`, `parseReportSearchParams`, …)
+eruit — precies het patroon dat nu ook voor `onderdelen` is toegepast. Alle overige
+`"use client"`-bestanden (`error.tsx`, `ArchiveSupplierButton.tsx`, `SupplierForm.tsx`,
+`BrandRow.tsx`, `NewBrandForm.tsx`, `ArchivePartButton.tsx`, `BarcodeField.tsx`,
+`PartForm.tsx`, `ReportsFilters.tsx`, `RevenueBarChart.tsx`, `QuantityStepper.tsx`,
+`SaleScreen.tsx`) exporteren uitsluitend componenten en `interface`/`type`-declaraties
+(die bij compilatie wegvallen) — geen overtredingen gevonden. `PartsTable.tsx` bevat
+géén `"use client"`-directive (de tekst "Geen `use client`" staat alleen in een
+commentaarregel die dat expliciet toelicht); dat bestand is terecht een Server
+Component.
+
+**Verificatie:**
+- `npx tsc --noEmit`: **0 fouten.**
+- `npx vitest run`: **331/331 tests groen** (13 testbestanden).
+- `npx next build` (rechtstreeks, niet via `npm run build`): **slaagt volledig**,
+  inclusief "Generating static pages (7/7)".
+- Rendertest tegen de echte database (40 onderdelen, 86 verkopen) via de draaiende
+  dev-server op poort 3111, met een geldig sessiecookie (`vb_session`, aangemaakt met
+  `createSessionValue()` uit `src/lib/auth.ts` en `SESSION_SECRET` uit `.env`; geen
+  wachtwoord ingetypt). Alle zeven pagina's gaven **HTTP 200**:
+  `/onderdelen`, `/onderdelen/nieuw`, `/`, `/verkoop`, `/leveranciers`, `/merken`,
+  `/rapportages`. (Tussentijds corrumpeerde de rechtstreekse `next build`-stap de
+  `.next`-map die de dev-server gebruikte — server herstart om de dev-build opnieuw te
+  laten genereren, waarna alle zeven routes opnieuw en foutloos zijn opgehaald.) De
+  dev-serverlogs na de herstart tonen geen `normalizeSearchParams`-fout meer en alleen
+  succesvolle `GET ... 200`-regels met de bijbehorende Prisma-queries.
+
 ## [FIX] Dynamisch renderen voor beschermde routes — 2026-09-22
 **Status:** klaar voor review
 

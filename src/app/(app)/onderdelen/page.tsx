@@ -8,14 +8,14 @@ import { listBrandsWithPartCounts } from "@/lib/queries/brands";
 import { countUnbrandedParts, listParts } from "@/lib/queries/parts";
 import { listSuppliers } from "@/lib/queries/suppliers";
 
+import { PartsFilters } from "./PartsFilters";
+import { PartsPagination } from "./PartsPagination";
+import { PartsTable } from "./PartsTable";
 import {
-  PartsFilters,
   normalizeSearchParams,
   parsePartsSearchParams,
   type RawSearchParams,
-} from "./PartsFilters";
-import { PartsPagination } from "./PartsPagination";
-import { PartsTable } from "./PartsTable";
+} from "./search-params";
 
 export const metadata: Metadata = {
   title: "Onderdelen — Voorraadbeheer",
@@ -34,7 +34,7 @@ const NEW_PART_LINK_CLASSES =
  * ALLE filterstatus staat in de URL (SPEC §F2: deelbaar en herlaadbaar): search,
  * brandId (of `brandId=unbranded` voor "zonder merk"), category, supplierId,
  * lowStockOnly, sort, sortDir, page en group (groepering per merk). De
- * URL-logica zelf staat in `./PartsFilters` (puur, getest zonder database in
+ * URL-logica zelf staat in `./search-params` (puur, getest zonder database in
  * `src/lib/__tests__/parts-overview.test.ts`).
  */
 export default async function OnderdelenPage({

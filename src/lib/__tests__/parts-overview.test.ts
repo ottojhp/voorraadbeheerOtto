@@ -3,7 +3,7 @@
  * het omzetten van `searchParams` naar `listParts`-parameters, het opbouwen
  * van URL's die bestaande filters behouden, en het groeperen per merk.
  *
- * Bewust geen database nodig: `PartsFilters.tsx` importeert alleen types uit
+ * Bewust geen database nodig: `search-params.ts` importeert alleen types uit
  * `@/lib/queries/*` (weggecompileerd door `import type`) en `PartsTable.tsx`
  * rekent niets uit — beide zijn hier dus rechtstreeks als pure functies te
  * testen.
@@ -17,7 +17,7 @@ import {
   normalizeSearchParams,
   parsePartsSearchParams,
   type RawSearchParams,
-} from "@/app/(app)/onderdelen/PartsFilters";
+} from "@/app/(app)/onderdelen/search-params";
 import { groupPartsByBrand } from "@/app/(app)/onderdelen/PartsTable";
 import type { PartDTO } from "@/lib/queries/types";
 

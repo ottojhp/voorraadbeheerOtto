@@ -1,13 +1,13 @@
 /**
  * Paginering voor het voorraadoverzicht (SPEC §F2: "paginering vanaf 50
  * rijen"). Server Component — de links zijn gewone `<Link>`s die de huidige
- * filters uit de URL behouden (via `buildPartsQuery` uit `PartsFilters`) en
+ * filters uit de URL behouden (via `buildPartsQuery` uit `./search-params`) en
  * alleen `page` overschrijven, dus geen client-side state nodig.
  */
 
 import Link from "next/link";
 
-import { buildPartsQuery } from "./PartsFilters";
+import { buildPartsQuery } from "./search-params";
 
 const ONDERDELEN_PATH = "/onderdelen";
 

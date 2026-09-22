@@ -468,6 +468,33 @@ vervolgens door, waarna de seed stukliep op `.key`. De sleutel wordt nu één ke
 en er volgt een duidelijke fout als hij niet bestaat. Dit is precies het soort fout dat
 geen enkele unit test ving omdat de seed nooit was uitgevoerd.
 
+### Reviewronde 3 — 2026-09-22: eerste echte gebruik
+
+De eigenaar meldde dat de voorraadpagina niet werkte. **Bevestigd en opgelost.**
+
+**Bug (T07):** `src/app/(app)/onderdelen/PartsFilters.tsx` had `"use client"` bovenaan maar
+exporteerde daarnaast pure hulpfuncties (`normalizeSearchParams`, `parsePartsSearchParams`,
+`buildPartsQuery` en drie andere). Next.js maakt van élke export uit een client-module een
+client-referentie, dus de server component `page.tsx` kon ze niet aanroepen: `/onderdelen`
+crashte bij elk bezoek. De pure logica staat nu in `search-params.ts` zonder `"use client"`.
+
+De bouwer motiveerde deze plaatsing destijds expliciet ("dit bestand importeert alleen
+types, dus het is veilig vanuit server components"). Die redenering was fout: het gaat niet
+om wat het bestand importeert, maar om de `"use client"`-directive zelf.
+
+**Waarom niets dit ving:** `tsc`, ESLint, 331 tests en `next build` waren allemaal groen.
+De fout treedt alleen op bij het renderen — en doordat we eerder `force-dynamic` hadden
+gezet, rendert de build die pagina juist níét. De twee fixes verborgen elkaar.
+
+**Les voor de resterende review:** een groene build zegt hier weinig. Elke pagina moet één
+keer echt opgehaald zijn. Dat is nu gedaan: met een sessiecookie dat via de eigen
+`createSessionValue()` van de app is aangemaakt, geven `/onderdelen`, `/onderdelen/nieuw`,
+`/`, `/verkoop`, `/leveranciers`, `/merken` en `/rapportages` alle zeven HTTP 200 mét
+echte data in de HTML (onderdeelnamen, voorraadwaarde, bestsellers, omzet).
+
+**Audit uitgevoerd:** alle andere `"use client"`-bestanden onder `src/app/**` exporteren
+uitsluitend componenten en types. Alleen `PartsFilters.tsx` had deze fout.
+
 ### Wat nog NIET geverifieerd is (vereist een `DATABASE_URL`)
 
 Dit is de volledige lijst; niets hiervan is stilzwijgend afgevinkt:
