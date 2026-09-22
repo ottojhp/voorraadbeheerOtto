@@ -801,7 +801,21 @@ async function main(): Promise<void> {
     attempts++;
 
     const isBestseller = rand() < 0.45;
-    const part = isBestseller ? PARTS.find((p) => p.key === pick(bestsellerKeys))! : pick(PARTS);
+    // pick() mag NIET binnen de find-predicate staan: die wordt per element uitgevoerd
+    // en koos dus telkens opnieuw een andere sleutel, waardoor find meestal niets vond.
+    // Het non-null assertion "!" liet dat undefined vervolgens stilletjes door, tot het
+    // een regel later op .key stukliep. Sleutel nu één keer kiezen, en netjes falen.
+    let part: (typeof PARTS)[number];
+    if (isBestseller) {
+      const bestsellerKey = pick(bestsellerKeys);
+      const found = PARTS.find((p) => p.key === bestsellerKey);
+      if (!found) {
+        throw new Error(`Bestseller-sleutel bestaat niet in PARTS: ${bestsellerKey}`);
+      }
+      part = found;
+    } else {
+      part = pick(PARTS);
+    }
 
     const desiredQty = isBestseller ? randInt(1, 4) : randInt(1, 3);
     const available = stockCounter.get(part.key) ?? 0;

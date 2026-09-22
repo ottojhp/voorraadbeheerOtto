@@ -444,18 +444,36 @@ geen enkele taakagent had die kunnen vinden met alleen `tsc` en `vitest`:
 **Geen enkele taak staat op `done`.** Alle 16 staan op `review`, omdat elke taak minstens
 één acceptatiecriterium heeft dat een echte database vereist. Zie hieronder.
 
+### Reviewronde 2 — 2026-09-22: draaiende database
+
+Er draait nu een lokale PostgreSQL 16.4 (embedded binaries, poort 5433) zodat de app
+getest kan worden. Daarmee zijn deze punten WEL geverifieerd:
+
+- **T02 is echt toegepast.** `prisma migrate deploy` draaide zonder fouten tegen een lege
+  database, inclusief de handgeschreven CHECK-constraints.
+- **T03 draait en is idempotent.** Na de eerste run: 25 merken, 4 leveranciers, 40
+  onderdelen (9 onder minimumvoorraad), 86 verkopen (57 balie, 29 werkplaats). Na een
+  tweede run exact dezelfde aantallen, geen duplicaten, geen crash.
+- **T06's lage-voorraadconditie klopt.** De Prisma field reference
+  (`stockQuantity <= minStock` met `minStock > 0`) levert tegen echte Postgres 9
+  onderdelen op, gelijk aan wat de seed rapporteert. Dit was het punt dat alleen tegen
+  een mock bewezen was.
+- Voorraadwaarde uit de database: € 14.333,40 inkoop en € 27.130,50 verkoop, excl. btw.
+
+**Bug gevonden en gerepareerd bij het draaien van de seed (T03):**
+`prisma/seed.ts` riep `pick(bestsellerKeys)` aan BINNEN de predicate van `PARTS.find(...)`.
+Die predicate draait per element, dus er werd telkens opnieuw een willekeurige sleutel
+gekozen en `find` vond meestal niets. Het non-null assertion `!` liet dat `undefined`
+vervolgens door, waarna de seed stukliep op `.key`. De sleutel wordt nu één keer gekozen
+en er volgt een duidelijke fout als hij niet bestaat. Dit is precies het soort fout dat
+geen enkele unit test ving omdat de seed nooit was uitgevoerd.
+
 ### Wat nog NIET geverifieerd is (vereist een `DATABASE_URL`)
 
 Dit is de volledige lijst; niets hiervan is stilzwijgend afgevinkt:
 
-- **T02** — `prisma migrate deploy` is nooit tegen een database gedraaid. De migratie-SQL
-  is gegenereerd en gevalideerd, maar niet toegepast. Ook de handgeschreven
-  CHECK-constraints zijn ongetest.
-- **T03** — de seed is geschreven maar nooit uitgevoerd. Idempotentie is beredeneerd,
-  niet bewezen.
-- **T06** — de lage-voorraadconditie gebruikt Prisma field references
-  (`stockQuantity <= minStock`). Alleen tegen een mock bewezen; de gegenereerde SQL moet
-  één keer met echte data gecontroleerd worden.
+*(T02, T03 en T06 zijn inmiddels wél geverifieerd — zie Reviewronde 2 hierboven.)*
+
 - **T12** — de voorwaardelijke `updateMany` die de race tussen twee balies afvangt, is
   alleen met een gemockte client getest. Dit is het belangrijkste ding om met een echte
   database na te spelen: twee gelijktijdige verkopen van het laatste stuk.
