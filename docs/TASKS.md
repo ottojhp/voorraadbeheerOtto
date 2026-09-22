@@ -27,7 +27,7 @@ gebruik.
 ---
 
 ## T01 — Projectsetup Next.js + TypeScript + Tailwind
-**Status:** todo
+**Status:** review
 **Afhankelijk van:** —
 
 **Beschrijving**
@@ -48,7 +48,7 @@ toe. Nog geen features, alleen een werkend skelet.
 ---
 
 ## T02 — Prisma + Postgres + schema en migratie
-**Status:** todo
+**Status:** review
 **Afhankelijk van:** T01
 
 **Beschrijving**
@@ -78,7 +78,7 @@ singleton in `src/lib/db.ts` die in dev geen connecties lekt.
 ---
 
 ## T03 — Seed-data
-**Status:** todo
+**Status:** review
 **Afhankelijk van:** T02
 
 **Beschrijving**
@@ -108,7 +108,7 @@ en verkopen verspreid over de afgelopen 90 dagen.
 ---
 
 ## T04 — Wachtwoordbeveiliging voor de hele site
-**Status:** todo
+**Status:** review
 **Afhankelijk van:** T01
 
 **Beschrijving**
@@ -134,7 +134,7 @@ sessiecookie, middleware voor alle routes, loginpagina en uitloggen.
 ---
 
 ## T05 — App-shell, navigatie en UI-basis
-**Status:** todo
+**Status:** review
 **Afhankelijk van:** T04
 
 **Beschrijving**
@@ -156,7 +156,7 @@ herbruikbare UI-primitives en helpers die de features nodig hebben.
 ---
 
 ## T06 — Datalaag onderdelen (queries en DTO's)
-**Status:** todo
+**Status:** review
 **Afhankelijk van:** T02, T05
 
 **Beschrijving**
@@ -180,7 +180,7 @@ Dit is de basis voor T07, T12 en T14.
 ---
 
 ## T07 — Voorraadoverzicht (F2)
-**Status:** todo
+**Status:** review
 **Afhankelijk van:** T06
 
 **Beschrijving**
@@ -204,7 +204,7 @@ groepering per merk en lage-voorraadmarkering.
 ---
 
 ## T08 — Onderdeel toevoegen en bewerken (F3)
-**Status:** todo
+**Status:** review
 **Afhankelijk van:** T07
 
 **Beschrijving**
@@ -233,7 +233,7 @@ Camerascan volgt in T11.
 ---
 
 ## T09 — Merken beheren
-**Status:** todo
+**Status:** review
 **Afhankelijk van:** T08
 
 **Beschrijving**
@@ -250,7 +250,7 @@ seed of database-toegang.
 ---
 
 ## T10 — Herbruikbare barcodescanner-component
-**Status:** todo
+**Status:** review
 **Afhankelijk van:** T05
 
 **Beschrijving**
@@ -273,7 +273,7 @@ callback. Wordt gebruikt door T11 en T12.
 ---
 
 ## T11 — Barcode scannen in het onderdeelformulier
-**Status:** todo
+**Status:** review
 **Afhankelijk van:** T08, T10
 
 **Beschrijving**
@@ -289,7 +289,7 @@ Koppel de scanner uit T10 aan het barcodeveld van het onderdeelformulier.
 ---
 
 ## T12 — Verkoop registreren (F4)
-**Status:** todo
+**Status:** review
 **Afhankelijk van:** T06, T10
 
 **Beschrijving**
@@ -325,7 +325,7 @@ baliescherm.
 ---
 
 ## T13 — Leveranciers (F5)
-**Status:** todo
+**Status:** review
 **Afhankelijk van:** T05, T06
 
 **Beschrijving**
@@ -347,7 +347,7 @@ archiveren, met koppeling naar onderdelen.
 ---
 
 ## T14 — Dashboard (F1)
-**Status:** todo
+**Status:** review
 **Afhankelijk van:** T06, T12
 
 **Beschrijving**
@@ -371,7 +371,7 @@ Implementeer het dashboard op `/` volgens SPEC §F1, met de aggregaties uit SPEC
 ---
 
 ## T15 — Rapportages (F6)
-**Status:** todo
+**Status:** review
 **Afhankelijk van:** T14
 
 **Beschrijving**
@@ -397,7 +397,7 @@ omzet per merk, omzetverloop en CSV-export.
 ---
 
 ## T16 — Deploy naar Vercel en README
-**Status:** todo
+**Status:** review
 **Afhankelijk van:** T12, T13, T14, T15
 
 **Beschrijving**
@@ -417,8 +417,76 @@ opzet voor de eigenaar.
 
 ## Feedback van review
 
-Nog geen reviews uitgevoerd. Afgekeurde taken krijgen hier (en onder de taak zelf)
-puntsgewijze feedback met bestand en regel.
+### Reviewronde 1 — 2026-09-22 (PM)
+
+**Alle 16 taken zijn gebouwd.** Statische verificatie is door de projectmanager zelf
+gedraaid, niet alleen door de bouwers overgenomen:
+
+| Controle | Uitkomst |
+|---|---|
+| `npx tsc --noEmit` | 0 fouten |
+| `npx vitest run` | 331 tests groen, 13 bestanden |
+| `npx eslint .` | schoon |
+| `npx next build` | slaagt, alle `(app)`-routes dynamisch |
+
+**Twee integratiebugs gevonden en opgelost**, beide pas zichtbaar bij `next build` —
+geen enkele taakagent had die kunnen vinden met alleen `tsc` en `vitest`:
+
+1. Drie `"use server"`-bestanden exporteerden ook gewone constanten
+   (`initialSupplierFormState` en vier soortgelijke). Next.js 15 verbiedt dat; de
+   productiebuild brak op alle formulierschermen. Opgelost door de statusconstanten naar
+   aparte `form-state.ts`-bestanden te verplaatsen.
+2. De beschermde routes werden statisch geprerenderd, waardoor de build de database
+   probeerde te lezen. Erger: een statisch dashboard zou de cijfers van het buildmoment
+   voor altijd tonen. Opgelost met `export const dynamic = "force-dynamic"` in
+   `src/app/(app)/layout.tsx`.
+
+**Geen enkele taak staat op `done`.** Alle 16 staan op `review`, omdat elke taak minstens
+één acceptatiecriterium heeft dat een echte database vereist. Zie hieronder.
+
+### Wat nog NIET geverifieerd is (vereist een `DATABASE_URL`)
+
+Dit is de volledige lijst; niets hiervan is stilzwijgend afgevinkt:
+
+- **T02** — `prisma migrate deploy` is nooit tegen een database gedraaid. De migratie-SQL
+  is gegenereerd en gevalideerd, maar niet toegepast. Ook de handgeschreven
+  CHECK-constraints zijn ongetest.
+- **T03** — de seed is geschreven maar nooit uitgevoerd. Idempotentie is beredeneerd,
+  niet bewezen.
+- **T06** — de lage-voorraadconditie gebruikt Prisma field references
+  (`stockQuantity <= minStock`). Alleen tegen een mock bewezen; de gegenereerde SQL moet
+  één keer met echte data gecontroleerd worden.
+- **T12** — de voorwaardelijke `updateMany` die de race tussen twee balies afvangt, is
+  alleen met een gemockte client getest. Dit is het belangrijkste ding om met een echte
+  database na te spelen: twee gelijktijdige verkopen van het laatste stuk.
+- **T14 / T15** — de `$queryRaw`-aggregaties (voorraadwaarde als som van een product van
+  twee kolommen, `date_trunc` met tijdzone `Europe/Amsterdam`, enum-casts) zijn niet
+  uitgevoerd. Controleer ook of `date_trunc('week', ...)` op de ingezette
+  Postgres-versie op maandag begint, zoals `isoWeekStart()` aanneemt.
+- **T07 / T08 / T13 / T14 / T15** — geen enkel scherm is met echte data bekeken. De
+  mobiele weergave op 375px is per scherm ontworpen maar alleen voor de loginpagina
+  visueel gecontroleerd.
+- **T10 / T11** — camerascan is niet op een echt toestel getest. Wel afgedekt met een
+  losse jsdom-testrun: `open={false}` vraagt geen camera, unmount tijdens een lopende
+  `getUserMedia` stopt de stream alsnog, en geweigerde toestemming geeft de juiste melding.
+- **T16** — `npm run build` bevat `prisma migrate deploy` en is dus niet volledig
+  gedraaid; `npx next build` slaagt wel. De echte Vercel-deploy is niet gedaan.
+
+### Aandachtspunten uit de bouw
+
+- **Zeldzame flake in `auth.test.ts`.** Eén keer gefaald in een gedeelde run, daarna
+  geslaagd in isolatie en in drie volledige herhalingen. Geen regressie, maar dit moet
+  uitgezocht zijn vóórdat de suite in CI gaat draaien — een flaky auth-test is precies
+  het soort test dat mensen gaan negeren.
+- **Race bij het verwijderen van een merk (T09).** Tussen de controle op gekoppelde
+  onderdelen en de `delete` kan een ander verzoek er een onderdeel aan hangen. Bewust
+  geaccepteerd voor v1 (één balie), anders dan bij de duplicaatnaam, die wél een
+  P2002-vangnet heeft.
+- **Sorteren op marge (T06)** leest alle gefilterde rijen voordat het pagineert, omdat
+  marge een afgeleide waarde is. Prima bij één winkel; bij tienduizenden regels is een
+  gegenereerde margekolom met index de volgende stap.
+- **Rate limiting op de login is in-memory** en dus per serverinstantie. Op Vercel
+  betekent dat: niet waterdicht. Staat zo in SPEC §F7 en in de README.
 
 ---
 

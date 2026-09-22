@@ -1,0 +1,171 @@
+// Datamodel voor het voorraadbeheer van een tweewielerzaak.
+// Bron: docs/SPEC.md §4 (datamodel) en §3 (architectuurregels, bindend).
+// Veld- en modelnamen zijn Engels; de UI toont Nederlandse labels.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  // Pooled connectie voor de applicatie; DIRECT_URL is de niet-pooled connectie
+  // die Prisma gebruikt voor migraties (nodig bij Neon / Vercel Postgres).
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+/// Vast lijstje in v1 (geen eigen CRUD). De UI toont Nederlandse labels.
+enum Category {
+  SCOOTER_PART
+  MOTOR_PART
+  EBIKE_PART
+  MOBILITY_PART
+  HELMET
+  ACCESSORY
+  /// Verbruiksartikelen: olie, vet, schoonmaakmiddelen.
+  CONSUMABLE
+  OTHER
+}
+
+/// COUNTER = verkoop over de balie.
+/// WORKSHOP = voorraadverbruik in de eigen werkplaats (onderdeel verdwijnt in een
+/// reparatie). Verlaagt de voorraad op dezelfde manier en telt mee in de bestsellers,
+/// maar wordt in rapportages apart uitgesplitst van de balieomzet.
+enum SaleChannel {
+  COUNTER
+  WORKSHOP
+}
+
+// ---------------------------------------------------------------------------
+// Modellen
+// ---------------------------------------------------------------------------
+
+/// Merk, bv. Vespa, Piaggio, Kymco, NIU, Super73.
+model Brand {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  parts Part[]
+}
+
+/// Leverancier. Soft delete via archivedAt (SPEC §3 regel 4).
+model Supplier {
+  id            String    @id @default(cuid())
+  name          String
+  contactPerson String?
+  phone         String?
+  email         String?
+  /// Meerregelig adres.
+  address       String?
+  notes         String?
+  /// Soft delete: gevuld = gearchiveerd, verborgen in overzichten.
+  archivedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  parts Part[]
+
+  @@index([archivedAt])
+}
+
+/// Onderdeel op voorraad.
+model Part {
+  id String @id @default(cuid())
+
+  name String
+
+  /// Merk is OPTIONEEL: universele onderdelen (olie, remblokken, kabels, lampjes)
+  /// horen bij geen enkel merk. De werkplaats onderhoudt bovendien merken die de
+  /// winkel zelf niet verkoopt.
+  brandId String?
+  /// onDelete: SetNull — een merk verwijderen mag het onderdeel niet meeslepen; het
+  /// onderdeel wordt dan simpelweg "universeel". Past bij de optionele relatie.
+  brand   Brand?  @relation(fields: [brandId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+
+  /// Verplicht; vast lijstje in v1.
+  category Category
+
+  /// Intern artikelnummer, verplicht en uniek.
+  sku     String  @unique
+  /// EAN/QR, optioneel. In Postgres zijn meerdere NULL-waarden toegestaan binnen een
+  /// unique index, dus "uniek indien gevuld" werkt zonder extra constraint.
+  barcode String? @unique
+
+  /// Alle prijzen worden EXCLUSIEF btw opgeslagen (SPEC §3 regel 0): inkoopfacturen
+  /// zijn excl. btw, en excl. met incl. vergelijken maakt elke marge ~21% te hoog.
+  /// De prijs incl. btw wordt afgeleid en alleen getoond, nooit opgeslagen.
+  purchasePrice Decimal @db.Decimal(10, 2)
+  salePrice     Decimal @db.Decimal(10, 2)
+  /// Btw-percentage per product (bv. 21.00), niet als fractie.
+  vatRate       Decimal @default(21) @db.Decimal(5, 2)
+
+  stockQuantity Int @default(0)
+  /// Drempel voor de lage-voorraadmelding.
+  minStock      Int @default(0)
+
+  supplierId String?
+  /// onDelete: SetNull — zie brand; het onderdeel blijft bestaan zonder leverancier.
+  supplier   Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+
+  description String?
+  /// Vrij pasvormveld, bv. "Vespa Primavera 2016-2021, Sprint 125". Doorzoekbaar.
+  fitsModels  String?
+  /// Schaplocatie.
+  location    String?
+
+  /// Soft delete: gevuld = gearchiveerd. Verborgen in overzichten en niet
+  /// selecteerbaar bij nieuwe verkoop, maar blijft zichtbaar in rapportages.
+  archivedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sales Sale[]
+
+  @@index([brandId])
+  @@index([supplierId])
+  @@index([archivedAt])
+  @@index([category])
+}
+
+/// Eén verkoop- of werkplaatsverbruikregel.
+/// Verkoophistorie is onaantastbaar: prijzen worden hier historisch vastgelegd, zodat
+/// de marge reconstrueerbaar blijft als de prijzen van het onderdeel later wijzigen
+/// (SPEC §3 regel 3).
+model Sale {
+  id String @id @default(cuid())
+
+  partId String
+  /// onDelete: Restrict — verkoophistorie mag NOOIT verdwijnen (SPEC §3 regel 4).
+  /// De database weigert daarom het hard verwijderen van een onderdeel dat in de
+  /// verkoophistorie voorkomt; archiveren via Part.archivedAt is de enige weg.
+  part   Part   @relation(fields: [partId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  /// Altijd > 0; afgedwongen in de Zod-validatie, niet in de database.
+  quantity Int
+
+  /// Prijzen per stuk, EXCLUSIEF btw, op het moment van verkoop.
+  salePriceAtSale     Decimal @db.Decimal(10, 2)
+  purchasePriceAtSale Decimal @db.Decimal(10, 2)
+  /// Btw-tarief op moment van verkoop, zodat het incl.-bedrag reconstrueerbaar blijft.
+  vatRateAtSale       Decimal @db.Decimal(5, 2)
+
+  channel SaleChannel
+
+  /// Vrije verwijzing naar de werkorder. GEEN persoonsgegevens: geen klantnaam,
+  /// geen kenteken (AVG).
+  reference String?
+
+  soldAt DateTime @default(now())
+  note   String?
+
+  @@index([partId])
+  @@index([soldAt])
+  @@index([channel])
+}

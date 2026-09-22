@@ -1,5 +1,18 @@
 # Voorraadbeheer scooter-/motoronderdelen
 
+## Lokale toolchain (belangrijk)
+
+De systeem-Node op deze machine is v16.14.2 en kan Next.js 15 niet draaien. Er staat een
+losse Node 22 in de scratchpad. Zet die vooraan in PATH bij **elk** npm/npx/node-commando:
+
+```
+export PATH="/private/tmp/claude-501/-Users-otto-Documents-GitHub-Eerste-test/a943ea32-7688-4b3d-8af6-a8f70bc6f2a2/scratchpad/node-v22.23.2-darwin-arm64/bin:$PATH"
+```
+
+Zonder die regel faalt de build met een onduidelijke foutmelding. Er is lokaal geen
+Postgres en geen Docker: migraties en seed kunnen pas gedraaid worden als er een
+`DATABASE_URL` naar een externe database (Neon of Vercel Postgres) beschikbaar is.
+
 ## Rolverdeling
 - `docs/SPEC.md` en `docs/TASKS.md` worden beheerd door de projectmanager-sessie.
   Wijzig de spec of de taakomschrijvingen niet zelf.

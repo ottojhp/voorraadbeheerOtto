@@ -1,0 +1,407 @@
+/**
+ * Tests voor de rapportage-bouwstenen (SPEC §F6, taak T15):
+ *
+ * - `@/lib/reporting-period`: periodeafbakening per preset, dag-grenzen,
+ *   tijdzoneconversie (zomer-/wintertijd), eigen datumbereik en terugval bij
+ *   ongeldige invoer.
+ * - `@/lib/csv`: quoting, decimaalkomma, BOM.
+ * - `@/lib/queries/reports`: margeberekening uit de (al historische) rij-waarden,
+ *   omzet 0 → margepercentage 0 zonder NaN, en dat filterwaarden als
+ *   queryparameter meegaan (nooit als tekst in de SQL zelf, ter voorkoming van
+ *   SQL-injectie).
+ *
+ * Er is in deze omgeving geen database; `@/lib/queries/reports` wordt getest tegen
+ * een gemockte Prisma-client (`vi.mock("@/lib/db")`), net als
+ * `src/lib/__tests__/sales.test.ts`.
+ */
+
+import { describe, expect, it, vi } from "vitest";
+
+import {
+  buildCsv,
+  contentDispositionAttachment,
+  csvField,
+  csvFilename,
+  csvNumber,
+  CSV_BOM,
+} from "@/lib/csv";
+import {
+  DEFAULT_PRESET,
+  addCalendarDays,
+  enumerateDayBuckets,
+  enumerateWeekBuckets,
+  endOfAmsterdamDayUtc,
+  resolveReportingPeriod,
+  startOfAmsterdamDayUtc,
+} from "@/lib/reporting-period";
+import {
+  getBestsellers,
+  getReportSummary,
+  getRevenueByBrand,
+  summaryRowToDto,
+} from "@/lib/queries/reports";
+
+// ---------------------------------------------------------------------------
+// Gemockte Prisma-client, voor de tests tegen @/lib/queries/reports hieronder.
+// `vi.mock` wordt door Vitest naar de top van het bestand gehesen, vóór alle
+// imports hierboven — hetzelfde patroon als `src/lib/__tests__/sales.test.ts`.
+// ---------------------------------------------------------------------------
+
+const { prismaMock } = vi.hoisted(() => {
+  const prismaMock = {
+    $queryRaw: vi.fn(),
+    part: { aggregate: vi.fn(), count: vi.fn(), findMany: vi.fn() },
+    sale: { findMany: vi.fn() },
+  };
+  return { prismaMock };
+});
+
+vi.mock("@/lib/db", () => ({ prisma: prismaMock, default: prismaMock }));
+
+// ---------------------------------------------------------------------------
+// reporting-period.ts — tijdzoneconversie
+// ---------------------------------------------------------------------------
+
+describe("startOfAmsterdamDayUtc / endOfAmsterdamDayUtc", () => {
+  it("rekent lokale middernacht om naar UTC in de zomer (CEST, UTC+2)", () => {
+    const start = startOfAmsterdamDayUtc({ year: 2026, month: 7, day: 1 });
+    expect(start.toISOString()).toBe("2026-06-30T22:00:00.000Z");
+  });
+
+  it("rekent lokale middernacht om naar UTC in de winter (CET, UTC+1)", () => {
+    const start = startOfAmsterdamDayUtc({ year: 2026, month: 1, day: 15 });
+    expect(start.toISOString()).toBe("2026-01-14T23:00:00.000Z");
+  });
+
+  it("het einde van de dag is 23:59:59.999 lokale tijd, omgerekend naar UTC", () => {
+    const end = endOfAmsterdamDayUtc({ year: 2026, month: 7, day: 1 });
+    expect(end.toISOString()).toBe("2026-07-01T21:59:59.999Z");
+  });
+
+  it("een verkoop om 23:59:59.999 lokale tijd valt nog wél binnen de dag, 00:00:00.000 de volgende dag niet meer", () => {
+    const end = endOfAmsterdamDayUtc({ year: 2026, month: 9, day: 22 });
+    const nextDayStart = startOfAmsterdamDayUtc({ year: 2026, month: 9, day: 23 });
+    expect(end.getTime()).toBeLessThan(nextDayStart.getTime());
+    expect(nextDayStart.getTime() - end.getTime()).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveReportingPeriod — presets en dag-grenzen
+// ---------------------------------------------------------------------------
+
+describe("resolveReportingPeriod — presets", () => {
+  // Dinsdag 22 september 2026, 16:00 Amsterdamse tijd (14:00 UTC, nog zomertijd) —
+  // dus een verkoop "vandaag om 16:00" zoals de opdracht als voorbeeld noemt.
+  const now = new Date("2026-09-22T14:00:00.000Z");
+  const today = { year: 2026, month: 9, day: 22 };
+
+  it("7d: van 6 dagen terug tot en met vandaag", () => {
+    const period = resolveReportingPeriod({ preset: "7d", now });
+    expect(period.preset).toBe("7d");
+    expect(period.warning).toBeNull();
+    expect(period.from.getTime()).toBe(
+      startOfAmsterdamDayUtc(addCalendarDays(today, -6)).getTime(),
+    );
+    expect(period.to.getTime()).toBe(endOfAmsterdamDayUtc(today).getTime());
+  });
+
+  it("30d: van 29 dagen terug tot en met vandaag", () => {
+    const period = resolveReportingPeriod({ preset: "30d", now });
+    expect(period.from.getTime()).toBe(
+      startOfAmsterdamDayUtc(addCalendarDays(today, -29)).getTime(),
+    );
+    expect(period.to.getTime()).toBe(endOfAmsterdamDayUtc(today).getTime());
+  });
+
+  it("90d: van 89 dagen terug tot en met vandaag", () => {
+    const period = resolveReportingPeriod({ preset: "90d", now });
+    expect(period.from.getTime()).toBe(
+      startOfAmsterdamDayUtc(addCalendarDays(today, -89)).getTime(),
+    );
+  });
+
+  it("ytd: van 1 januari van dit jaar tot en met vandaag", () => {
+    const period = resolveReportingPeriod({ preset: "ytd", now });
+    expect(period.from.getTime()).toBe(
+      startOfAmsterdamDayUtc({ year: 2026, month: 1, day: 1 }).getTime(),
+    );
+    expect(period.to.getTime()).toBe(endOfAmsterdamDayUtc(today).getTime());
+  });
+
+  it("geen preset opgegeven valt terug op de standaardperiode zonder waarschuwing", () => {
+    const period = resolveReportingPeriod({ now });
+    expect(period.preset).toBe(DEFAULT_PRESET);
+    expect(period.warning).toBeNull();
+  });
+});
+
+describe("resolveReportingPeriod — eigen datumbereik", () => {
+  it("geldig van/tot geeft precies die grenzen", () => {
+    const period = resolveReportingPeriod({ preset: "custom", from: "2026-01-01", to: "2026-01-31" });
+    expect(period.preset).toBe("custom");
+    expect(period.warning).toBeNull();
+    expect(period.from.getTime()).toBe(
+      startOfAmsterdamDayUtc({ year: 2026, month: 1, day: 1 }).getTime(),
+    );
+    expect(period.to.getTime()).toBe(
+      endOfAmsterdamDayUtc({ year: 2026, month: 1, day: 31 }).getTime(),
+    );
+  });
+
+  it("van en tot dezelfde dag geeft een geldige periode van precies die dag", () => {
+    const period = resolveReportingPeriod({ preset: "custom", from: "2026-03-10", to: "2026-03-10" });
+    expect(period.warning).toBeNull();
+    expect(period.from.getTime()).toBeLessThan(period.to.getTime());
+  });
+});
+
+describe("resolveReportingPeriod — ongeldige invoer", () => {
+  const now = new Date("2026-09-22T14:00:00.000Z");
+
+  it("onbekende preset valt terug op de standaardperiode met een melding", () => {
+    const period = resolveReportingPeriod({ preset: "onzin", now });
+    expect(period.preset).toBe(DEFAULT_PRESET);
+    expect(period.warning).toContain("onzin");
+  });
+
+  it("custom zonder van/tot valt terug op de standaardperiode met een melding", () => {
+    const period = resolveReportingPeriod({ preset: "custom", now });
+    expect(period.preset).toBe(DEFAULT_PRESET);
+    expect(period.warning).not.toBeNull();
+  });
+
+  it("custom met een niet-bestaande datum (30 februari) valt terug met een melding", () => {
+    const period = resolveReportingPeriod({
+      preset: "custom",
+      from: "2026-02-30",
+      to: "2026-03-01",
+      now,
+    });
+    expect(period.preset).toBe(DEFAULT_PRESET);
+    expect(period.warning).not.toBeNull();
+  });
+
+  it("custom met tot vóór van valt terug met een melding", () => {
+    const period = resolveReportingPeriod({
+      preset: "custom",
+      from: "2026-03-10",
+      to: "2026-03-01",
+      now,
+    });
+    expect(period.preset).toBe(DEFAULT_PRESET);
+    expect(period.warning).toContain("vóór");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// enumerateDayBuckets / enumerateWeekBuckets
+// ---------------------------------------------------------------------------
+
+describe("enumerateDayBuckets / enumerateWeekBuckets", () => {
+  it("geeft elke kalenderdag tussen from en to, inclusief beide grenzen", () => {
+    const from = startOfAmsterdamDayUtc({ year: 2026, month: 9, day: 20 });
+    const to = endOfAmsterdamDayUtc({ year: 2026, month: 9, day: 22 });
+    expect(enumerateDayBuckets(from, to)).toEqual(["2026-09-20", "2026-09-21", "2026-09-22"]);
+  });
+
+  it("geeft elke ISO-weekmaandag tussen from en to", () => {
+    // Maandag 14 t/m zondag 27 september 2026 beslaat twee ISO-weken.
+    const from = startOfAmsterdamDayUtc({ year: 2026, month: 9, day: 14 });
+    const to = endOfAmsterdamDayUtc({ year: 2026, month: 9, day: 27 });
+    expect(enumerateWeekBuckets(from, to)).toEqual(["2026-09-14", "2026-09-21"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// csv.ts
+// ---------------------------------------------------------------------------
+
+describe("csvField", () => {
+  it("laat een gewone waarde ongewijzigd", () => {
+    expect(csvField("Remblokken")).toBe("Remblokken");
+  });
+
+  it("quote een waarde met het scheidingsteken (;)", () => {
+    expect(csvField("Vespa; Sprint")).toBe('"Vespa; Sprint"');
+  });
+
+  it("quote en verdubbelt aanhalingstekens", () => {
+    expect(csvField('24" velg')).toBe('"24"" velg"');
+  });
+
+  it("quote een waarde met een regeleinde", () => {
+    expect(csvField("regel1\nregel2")).toBe('"regel1\nregel2"');
+  });
+});
+
+describe("csvNumber", () => {
+  it("gebruikt een komma als decimaalteken met 2 decimalen", () => {
+    expect(csvNumber(1234.5)).toBe("1234,50");
+  });
+
+  it("werkt voor negatieve bedragen", () => {
+    expect(csvNumber(-12.3)).toBe("-12,30");
+  });
+
+  it("valt terug op 0,00 bij NaN in plaats van de tekst 'NaN' te schrijven", () => {
+    expect(csvNumber(Number.NaN)).toBe("0,00");
+  });
+});
+
+describe("buildCsv", () => {
+  it("begint met een UTF-8 BOM", () => {
+    const csv = buildCsv(["Kolom"], [["waarde"]]);
+    expect(csv.startsWith(CSV_BOM)).toBe(true);
+  });
+
+  it("scheidt kolommen met puntkomma en rijen met CRLF", () => {
+    const csv = buildCsv(["Naam", "Omzet"], [["Filter", 12.5]]);
+    expect(csv).toBe(`${CSV_BOM}Naam;Omzet\r\nFilter;12,50\r\n`);
+  });
+
+  it("quote een cel die het scheidingsteken bevat", () => {
+    const csv = buildCsv(["Naam"], [["Vespa; Sprint"]]);
+    expect(csv).toContain('"Vespa; Sprint"');
+  });
+});
+
+describe("csvFilename / contentDispositionAttachment", () => {
+  it("bevat de periode in de bestandsnaam", () => {
+    expect(csvFilename("bestsellers", "2026-09-01", "2026-09-22")).toBe(
+      "bestsellers_2026-09-01_2026-09-22.csv",
+    );
+  });
+
+  it("zet de bestandsnaam correct in de Content-Disposition-header", () => {
+    const header = contentDispositionAttachment("bestsellers_2026-09-01_2026-09-22.csv");
+    expect(header).toContain('filename="bestsellers_2026-09-01_2026-09-22.csv"');
+    expect(header).toContain("attachment");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// @/lib/queries/reports — summaryRowToDto (pure DTO-mapping)
+// ---------------------------------------------------------------------------
+
+describe("summaryRowToDto", () => {
+  it("berekent margepercentage uit omzet en marge (Postgres numeric komt als string/bigint binnen)", () => {
+    const dto = summaryRowToDto({
+      revenue: "200.00",
+      margin: "50.00",
+      itemsSold: "10",
+      transactionCount: BigInt(4),
+    });
+    expect(dto.revenue).toBe(200);
+    expect(dto.margin).toBe(50);
+    expect(dto.marginPct).toBe(25);
+    expect(dto.itemsSold).toBe(10);
+    expect(dto.transactionCount).toBe(4);
+  });
+
+  it("geeft margepercentage 0 bij omzet 0, nooit NaN", () => {
+    const dto = summaryRowToDto({ revenue: 0, margin: 0, itemsSold: 0, transactionCount: 0 });
+    expect(dto.marginPct).toBe(0);
+    expect(Number.isNaN(dto.marginPct)).toBe(false);
+  });
+
+  it("valt terug op nullen bij een ontbrekende rij (lege periode)", () => {
+    const dto = summaryRowToDto(undefined);
+    expect(dto).toEqual({ revenue: 0, margin: 0, marginPct: 0, itemsSold: 0, transactionCount: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// @/lib/queries/reports — tegen de gemockte Prisma-client
+// ---------------------------------------------------------------------------
+
+describe("getReportSummary (gemockt)", () => {
+  it("geeft filterwaarden als queryparameter mee, nooit als tekst in de SQL zelf", async () => {
+    prismaMock.$queryRaw.mockResolvedValueOnce([
+      { revenue: "300.00", margin: "75.00", itemsSold: "6", transactionCount: BigInt(3) },
+    ]);
+
+    const from = new Date("2026-09-01T00:00:00.000Z");
+    const to = new Date("2026-09-30T23:59:59.999Z");
+
+    const dto = await getReportSummary({ from, to, channel: "COUNTER", category: "HELMET" });
+
+    expect(dto).toEqual({ revenue: 300, margin: 75, marginPct: 25, itemsSold: 6, transactionCount: 3 });
+
+    // `$queryRaw` is aangeroepen als tagged template: (strings, ...values). De
+    // enige interpolatie in de buitenste template is `${where}` — een
+    // `Prisma.Sql`-object dat `buildWhereSql` opbouwde met `Prisma.sql`/`Prisma.join`.
+    // Dát object draagt zijn eigen `strings`/`values`: de filterwaarden moeten daar
+    // in `values` staan (gebonden parameters), en NOOIT letterlijk in een van de
+    // SQL-tekstfragmenten (dat zou betekenen dat ze in de queryTEKST zelf zijn
+    // geplakt, oftewel string-interpolatie — precies wat SQL-injectie mogelijk zou
+    // maken).
+    const [outerStrings, where] = prismaMock.$queryRaw.mock.calls[0] as [
+      TemplateStringsArray,
+      { strings: string[]; values: unknown[] },
+    ];
+    const outerSqlText = outerStrings.join("");
+    const whereSqlText = where.strings.join("");
+
+    expect(outerSqlText).toContain('"salePriceAtSale" - s."purchasePriceAtSale"');
+    expect(whereSqlText).not.toContain("COUNTER");
+    expect(whereSqlText).not.toContain("HELMET");
+    expect(where.values).toContain("COUNTER");
+    expect(where.values).toContain("HELMET");
+    expect(where.values).toContain(from);
+    expect(where.values).toContain(to);
+  });
+});
+
+describe("getBestsellers (gemockt)", () => {
+  it("markeert een gearchiveerd onderdeel en zet de rauwe getallen om naar number", async () => {
+    const archivedAt = new Date("2026-05-01T00:00:00.000Z");
+    prismaMock.$queryRaw.mockResolvedValueOnce([
+      {
+        partId: "part-1",
+        name: "Remblok voor",
+        sku: "RB-001",
+        brandName: "Vespa",
+        archivedAt,
+        quantitySold: "12",
+        revenue: "180.00",
+        margin: "60.00",
+      },
+    ]);
+
+    const rows = await getBestsellers({
+      from: new Date("2026-09-01T00:00:00.000Z"),
+      to: new Date("2026-09-30T23:59:59.999Z"),
+    });
+
+    expect(rows).toEqual([
+      {
+        partId: "part-1",
+        name: "Remblok voor",
+        sku: "RB-001",
+        brandName: "Vespa",
+        isArchived: true,
+        quantitySold: 12,
+        revenue: 180,
+        margin: 60,
+      },
+    ]);
+  });
+});
+
+describe("getRevenueByBrand (gemockt)", () => {
+  it("labelt een ontbrekend merk als 'Zonder merk'", async () => {
+    prismaMock.$queryRaw.mockResolvedValueOnce([
+      { brandId: null, brandName: null, revenue: "40.00", margin: "10.00", itemsSold: "2" },
+    ]);
+
+    const rows = await getRevenueByBrand({
+      from: new Date("2026-09-01T00:00:00.000Z"),
+      to: new Date("2026-09-30T23:59:59.999Z"),
+    });
+
+    expect(rows).toEqual([
+      { brandId: null, brandName: "Zonder merk", revenue: 40, margin: 10, itemsSold: 2 },
+    ]);
+  });
+});

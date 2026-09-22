@@ -1,0 +1,40 @@
+# dependencies
+node_modules
+
+# next.js
+.next
+out
+
+# production
+build
+dist
+
+# env (nooit echte geheimen committen; .env.example is de uitzondering)
+.env*
+!.env.example
+
+# prisma (gegenereerde client-output, indien custom generator-output wordt gebruikt)
+/prisma/generated
+/generated/prisma
+
+# testing / coverage
+coverage
+
+# misc
+.DS_Store
+*.pem
+
+# debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# vercel
+.vercel
+
+# lokale dev-serverconfig met machine-specifieke paden
+.claude/launch.json
