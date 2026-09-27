@@ -9,9 +9,39 @@ losse Node 22 in de scratchpad. Zet die vooraan in PATH bij **elk** npm/npx/node
 export PATH="/private/tmp/claude-501/-Users-otto-Documents-GitHub-Eerste-test/a943ea32-7688-4b3d-8af6-a8f70bc6f2a2/scratchpad/node-v22.23.2-darwin-arm64/bin:$PATH"
 ```
 
-Zonder die regel faalt de build met een onduidelijke foutmelding. Er is lokaal geen
-Postgres en geen Docker: migraties en seed kunnen pas gedraaid worden als er een
-`DATABASE_URL` naar een externe database (Neon of Vercel Postgres) beschikbaar is.
+Zonder die regel faalt de build met een onduidelijke foutmelding.
+
+Er is geen systeem-Postgres en geen Docker. In plaats daarvan draait een draagbare
+PostgreSQL 16.4 uit dezelfde scratchpad op poort **5433**; `.env` wijst er al naar.
+Starten (als hij niet luistert op 5433):
+
+```
+SP="/private/tmp/claude-501/-Users-otto-Documents-GitHub-Eerste-test/a943ea32-7688-4b3d-8af6-a8f70bc6f2a2/scratchpad"
+"$SP/pg/dist/bin/pg_ctl" -D "$SP/pgdata" \
+  -o "-p 5433 -c unix_socket_directories= -c listen_addresses=127.0.0.1" \
+  -l "$SP/pg.log" start
+```
+
+**De scratchpad is tijdelijk.** Node 22, de Postgres-binaries en de database worden
+opgeruimd. Zijn ze weg, dan moeten Node en Postgres opnieuw gedownload worden, gevolgd
+door `npx prisma migrate deploy` en `npm run db:seed`. Voor iets blijvends hoort hier een
+externe `DATABASE_URL` (Neon of Vercel Postgres).
+
+## Verifiëren: een groene build is niet genoeg
+
+Tijdens de bouw zijn twee bugs pas bij echt gebruik gevonden, terwijl `tsc`, ESLint, alle
+tests én `next build` groen waren. Haal daarom elke pagina die je raakt ook echt op. De
+app zit achter een login; maak een sessiecookie met de eigen `createSessionValue()` uit
+`src/lib/auth.ts` (typ nergens een wachtwoord in een formulier) en doe:
+
+```
+curl -s -o /dev/null -w "%{http_code}\n" --cookie "vb_session=<waarde>" http://localhost:3111/onderdelen
+```
+
+Let in het bijzonder op de client/server-scheiding: een bestand met `"use client"` mag
+alleen componenten en types exporteren. Exporteert het ook gewone functies en roept een
+server component die aan, dan crasht de pagina bij élk bezoek zonder dat de build of de
+tests iets merken.
 
 ## Rolverdeling
 - `docs/SPEC.md` en `docs/TASKS.md` worden beheerd door de projectmanager-sessie.
