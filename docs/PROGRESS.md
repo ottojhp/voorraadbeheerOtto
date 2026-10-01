@@ -6,6 +6,41 @@ in `docs/TASKS.md`.
 
 Nieuwste notitie bovenaan.
 
+## [FIX] Tijdzone bij datumweergave — 2026-10-01
+**Status:** klaar voor review
+**Gewijzigde bestanden:** src/lib/datetime.ts (nieuw), src/lib/__tests__/datetime.test.ts
+(nieuw), src/app/(app)/page.tsx, src/app/(app)/verkoop/RecentSalesCard.tsx,
+src/app/(app)/rapportages/RevenueBarChart.tsx, src/lib/stock-mutation-format.ts,
+src/lib/reporting-period.ts, docs/PROGRESS.md, docs/TASKS.md (alleen observatie onderaan)
+**Wat is gebouwd:** Vercel draait op UTC, de winkel in Amsterdam; drie formatters hadden
+geen `timeZone` en toonden een verkoop van 16:30 als 14:30. Alle drie zijn nu vast op
+Europe/Amsterdam, via een nieuwe gedeelde module `src/lib/datetime.ts`
+(`APP_TIME_ZONE`, `formatDateTime`, `formatCompactDateTime`, `formatCalendarDayMonth`).
+Het dashboard gebruikt `formatDateTime`, het verkoopscherm `formatCompactDateTime`, de
+omzetgrafiek `formatCalendarDayMonth`.
+**Keuzes en afwijkingen:** Wel gecentraliseerd: `formatMutationDateTime` blijft als dunne
+wrapper bestaan (zelfde uitvoer, aanroepers ongewijzigd) en `reporting-period.ts` leest
+nu `APP_TIME_ZONE` in plaats van een eigen string; de periodelogica zelf is niet
+aangeraakt. Het grafieklabel is een kalenderdag, geen moment: daarvoor wordt 12:00 UTC
+opgebouwd zodat de dag nooit kan verspringen (was 00:00 UTC; ook correct maar fragieler).
+**Bewust niet gedaan:** `periodStart()` in `src/lib/queries/dashboard.ts` (zie risico's);
+geen ESLint-regel toegevoegd (de test bewaakt het statisch).
+**Verificatie:** tsc 0 fouten; vitest 512/512 (499 bestaand + 13 nieuw); eslint schoon;
+`next build` schoon. De test zet `TZ=UTC` en importeert de modules daarna dynamisch
+(de formatters leggen de tijdzone vast bij het laden). Bewezen dat hij de bug vangt:
+zonder `timeZone` in `datetime.ts` falen 7 tests. Statische bewaking: geen
+`toLocale*String` en geen `Intl.DateTimeFormat` zonder `timeZone` in `src/`. Rendertest
+met dev-server op `TZ=UTC`, vergeleken met de database, vóór en na de fix: de oude code
+toonde 22:12 / 07:59 / 14:00, de nieuwe 00:12 / 09:59 / 16:00 = Amsterdam, identiek aan
+de databasequery. Zie het rapport voor de letterlijke vergelijking.
+**Openstaand / risico's:** `periodStart()` in `queries/dashboard.ts` rekent het
+bestsellervenster met `setDate/getDate` in de proces-tijdzone. Dat is geen weergave,
+alleen een venstergrens van 30 dagen die op UTC maximaal een uur afwijkt rond
+zomer-/wintertijd; niet aangepast. Overige gevonden datumplekken waren al goed
+(`reporting-period.ts`, SQL in `queries/reports.ts` met `AT TIME ZONE`).
+
+---
+
 ## [T24] Voorraadgrootboek zichtbaar gemaakt — 2026-10-01
 **Status:** klaar voor review
 

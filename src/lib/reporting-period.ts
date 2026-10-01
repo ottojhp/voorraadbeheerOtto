@@ -35,6 +35,8 @@
  * dezelfde grens delen op millisecondeniveau).
  */
 
+import { APP_TIME_ZONE } from "@/lib/datetime";
+
 // ---------------------------------------------------------------------------
 // Kalenderdatum-hulpjes (puur, geen tijdzone-aanname, alleen y/m/d rekenen)
 // ---------------------------------------------------------------------------
@@ -102,7 +104,7 @@ export function parseIsoDateParts(value: string | undefined | null): CalendarDat
 // Europe/Amsterdam ↔ UTC
 // ---------------------------------------------------------------------------
 
-const AMSTERDAM_TZ = "Europe/Amsterdam";
+const AMSTERDAM_TZ = APP_TIME_ZONE;
 
 /** Herbruikbare formatter; `Intl.DateTimeFormat` is duur genoeg om niet per call te maken. */
 const amsterdamPartsFormatter = new Intl.DateTimeFormat("en-US", {

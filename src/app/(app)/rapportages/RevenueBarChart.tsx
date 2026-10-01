@@ -10,6 +10,7 @@
  * precisie wil dan de balkhoogte geeft.
  */
 
+import { formatCalendarDayMonth } from "@/lib/datetime";
 import { formatEuro } from "@/lib/money";
 import type { RevenueBucketDTO } from "@/lib/queries/reports";
 
@@ -22,8 +23,7 @@ function formatBucketLabel(bucket: string): string {
   if (!year || !month || !day) {
     return bucket;
   }
-  const date = new Date(Date.UTC(year, month - 1, day));
-  return new Intl.DateTimeFormat("nl-NL", { day: "numeric", month: "short" }).format(date);
+  return formatCalendarDayMonth(year, month, day);
 }
 
 export interface RevenueBarChartProps {

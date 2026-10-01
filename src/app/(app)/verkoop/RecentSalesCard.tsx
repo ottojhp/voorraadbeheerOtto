@@ -24,6 +24,7 @@
 
 import { Card } from "@/components/Card";
 import { PriceWithVat } from "@/components/PriceWithVat";
+import { formatCompactDateTime } from "@/lib/datetime";
 import { SALE_CHANNEL_LABELS } from "@/lib/labels";
 import { listRecentSales, type RecentSaleDTO } from "@/lib/queries/sales";
 
@@ -85,12 +86,7 @@ export async function RecentSalesCard({ limit }: RecentSalesCardProps) {
                 <p className="text-xs text-gray-500">
                   {SALE_CHANNEL_LABELS[sale.channel]}
                   {sale.reference ? ` · ${sale.reference}` : ""} ·{" "}
-                  {new Date(sale.soldAt).toLocaleString("nl-NL", {
-                    day: "2-digit",
-                    month: "2-digit",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
+                  {formatCompactDateTime(sale.soldAt)}
                 </p>
               </div>
               {/* Het betaalde bedrag (incl. btw) is het hoofdbedrag; het

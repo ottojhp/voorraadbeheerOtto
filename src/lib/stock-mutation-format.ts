@@ -3,6 +3,8 @@
  * dit bestand wordt door server components én door Vitest gebruikt.
  */
 
+import { formatDateTime } from "@/lib/datetime";
+
 /** Het echte minteken (U+2212), zoals in de taakomschrijving: `+10` / `−1`. */
 const MINUS = "−";
 
@@ -24,20 +26,11 @@ export function describeDelta(delta: number): string {
   return `${delta < 0 ? "min" : "plus"} ${amount} ${unit}`;
 }
 
-const dateTimeFormatter = new Intl.DateTimeFormat("nl-NL", {
-  timeZone: "Europe/Amsterdam",
-  day: "numeric",
-  month: "short",
-  year: "numeric",
-  hour: "2-digit",
-  minute: "2-digit",
-});
-
 /**
- * Datum en tijd zoals de winkel ze beleeft, bv. `1 okt 2026, 14:05`. De tijdzone is
- * vast Europe/Amsterdam: de server draait op UTC en zou anders een of twee uur
- * ernaast zitten (zelfde redenering als `@/lib/reporting-period`).
+ * Datum en tijd zoals de winkel ze beleeft, bv. `1 okt 2026, 14:05` (altijd
+ * Europe/Amsterdam, zie `@/lib/datetime`). Bewaard als eigen naam voor de bestaande
+ * aanroepers.
  */
 export function formatMutationDateTime(iso: string): string {
-  return dateTimeFormatter.format(new Date(iso));
+  return formatDateTime(iso);
 }

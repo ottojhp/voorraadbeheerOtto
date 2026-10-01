@@ -14,6 +14,7 @@ import {
   TableHeaderCell,
 } from "@/components/Table";
 import { DashboardIcon, SaleIcon, StockIcon } from "@/components/icons";
+import { formatDateTime } from "@/lib/datetime";
 import { getSaleChannelLabel } from "@/lib/labels";
 import { formatEuro } from "@/lib/money";
 import {
@@ -25,17 +26,6 @@ import {
 export const metadata: Metadata = {
   title: "Dashboard — Voorraadbeheer",
 };
-
-/** Datum + tijd in Nederlandse notatie, bv. `22 sep 2026, 14:05`. */
-function formatDateTime(iso: string): string {
-  return new Intl.DateTimeFormat("nl-NL", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(iso));
-}
 
 /** Eén bestsellerlijst, gedeeld tussen de "laatste 30 dagen"- en de all-time-kaart. */
 function BestsellerList({ items }: { items: BestsellerDTO[] }) {

@@ -946,3 +946,10 @@ Ze worden niet tussendoor gebouwd.
      volume niet nodig; relevant zodra één onderdeel tienduizenden regels krijgt.
   4. De notitie van een mutatie bevat soms een technische id ("mutatie cmup…", T19 "ongedaan
      maken"). Leesbaar genoeg voor nu; een link naar de oorspronkelijke regel kan later.
+
+- (2026-10-01, bouwsessie) **`periodStart()` in `src/lib/queries/dashboard.ts` gebruikt
+  proces-tijdzone.** `start.setDate(start.getDate() - days)` rekent in de tijdzone van
+  het proces (UTC op Vercel, Amsterdam lokaal). Voor het 30-dagenvenster van de
+  bestsellers is het verschil hooguit een uur rond een DST-overgang; geen weergave en
+  niet gefixt in de tijdzone-fix. Eventueel meenemen als dat venster ooit op de
+  Amsterdamse dag moet aansluiten.
