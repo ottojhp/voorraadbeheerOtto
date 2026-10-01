@@ -52,6 +52,8 @@ function toSaleOption(part: PartDTO): PartSaleOptionDTO {
     salePriceIncl: part.salePriceIncl,
     vatRate: part.vatRate,
     salePriceExcl: part.salePriceExcl,
+    // T26: nodig voor de resterende marge en de waarschuwing onder de inkoopprijs.
+    purchasePriceExcl: part.purchasePriceExcl,
   };
 }
 

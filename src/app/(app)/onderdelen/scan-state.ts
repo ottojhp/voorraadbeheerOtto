@@ -60,6 +60,7 @@ export const SCAN_KIND_LABELS: Record<PartScanMatchDTO["kind"], string> = {
   exact: "exacte treffer",
   normalized: "treffer na verbeteren van verwisselbare tekens",
   contained: "zwakke treffer: het nummer komt voor in de gelezen tekst",
+  approximate: "treffer na correctie van losse tekens",
 };
 
 /** Of deze treffer zonder meer te vertrouwen is. Bepaalt de kleur van de kaart. */
@@ -67,11 +68,33 @@ export function isStrongMatch(match: PartScanMatchDTO): boolean {
   return match.kind === "exact";
 }
 
+/**
+ * Hoe zeker deze treffer is, in woorden (T25).
+ *
+ * Bij een benaderende treffer staat het AANTAL gecorrigeerde tekens erin, want dat
+ * is het verschil dat aan de balie iets zegt: één teken gecorrigeerd op een nummer
+ * van twaalf is iets anders dan twee tekens op een nummer van zes. De vaste tekst
+ * uit {@link SCAN_KIND_LABELS} blijft de terugval voor het geval het getal
+ * ontbreekt (een oud resultaat, of een treffer die niet uit stap 4 komt).
+ */
+export function describeScanCertainty(match: PartScanMatchDTO): string {
+  if (match.kind !== "approximate") {
+    return SCAN_KIND_LABELS[match.kind];
+  }
+  const corrected = match.distance ?? 0;
+  if (corrected <= 0) {
+    return SCAN_KIND_LABELS.approximate;
+  }
+  return corrected === 1
+    ? "treffer na correctie van 1 teken"
+    : `treffer na correctie van ${corrected} tekens`;
+}
+
 /** "barcode 8712345000019 — exacte treffer" */
 export function describeScanMatch(match: PartScanMatchDTO): string {
-  return `${SCAN_FIELD_LABELS[match.field]} ${match.value} — ${
-    SCAN_KIND_LABELS[match.kind]
-  }`;
+  return `${SCAN_FIELD_LABELS[match.field]} ${match.value} — ${describeScanCertainty(
+    match,
+  )}`;
 }
 
 /** Hoe de tekst gelezen is, voor de regel boven de kandidaten. */

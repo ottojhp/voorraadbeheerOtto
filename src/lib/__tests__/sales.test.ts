@@ -130,6 +130,17 @@ function saleCreateData(): Record<string, unknown> {
   return call!.data;
 }
 
+/**
+ * Een geldbedrag uit de `sale.create`-argumenten als getal (T26).
+ *
+ * `Prisma.Decimal` normaliseert zijn tekstvorm ("35.00" wordt "35"), dus een
+ * vergelijking op de string zou over de notatie gaan en niet over het bedrag. Dit
+ * hulpje vergelijkt de WAARDE.
+ */
+function saleCreateAmount(key: string): number {
+  return Number(String(saleCreateData()[key]));
+}
+
 /** De argumenten waarmee `stockMutation.create` is aangeroepen. */
 function stockMutationData(): Record<string, unknown> {
   const call = txMock.stockMutation.create.mock.calls[0]?.[0] as
@@ -585,6 +596,177 @@ describe("registerSale — ongeldig aantal", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Korting (T26)
+// ---------------------------------------------------------------------------
+
+describe("registerSale — korting", () => {
+  it("legt de BETAALDE prijs en de NORMALE prijs apart vast", async () => {
+    arrangeSuccess({ newStock: 7 });
+
+    const { sale } = await registerSale({
+      partId: "part_1",
+      quantity: 1,
+      channel: "COUNTER",
+      // 10% korting op 30,19 incl. btw.
+      unitPriceIncl: "27,17",
+      discountReason: "beschadigde doos",
+    });
+
+    const data = saleCreateData();
+    // De betaalde prijs komt uit het formulier...
+    expect(saleCreateAmount("salePriceInclAtSale")).toBe(27.17);
+    // ...de normale prijs UIT HET ONDERDEEL, niet uit het formulier: anders zou een
+    // geknutselde POST de gegeven korting in de rapportages kunnen vervalsen.
+    expect(saleCreateAmount("listPriceInclAtSale")).toBe(30.19);
+    expect(data.discountReason).toBe("beschadigde doos");
+
+    // En de DTO rekent het door voor het scherm.
+    expect(sale.salePriceInclAtSale).toBe(27.17);
+    expect(sale.listPriceInclAtSale).toBe(30.19);
+    expect(sale.discountPerUnitIncl).toBe(3.02);
+    expect(sale.discountPct).toBe(10);
+    expect(sale.hasDiscount).toBe(true);
+    expect(sale.discountTotalIncl).toBe(3.02);
+    expect(sale.lineTotalInclVat).toBe(27.17);
+    expect(sale.lineTotalListInclVat).toBe(30.19);
+  });
+
+  it("boekt zonder prijsveld de normale prijs, dus geen korting", async () => {
+    // Geen JavaScript of een oudere POST: er komt geen `unitPriceIncl` mee. Dan hoort
+    // de normale prijs geboekt te worden — de veilige kant.
+    arrangeSuccess({ newStock: 7 });
+
+    const { sale } = await registerSale({
+      partId: "part_1",
+      quantity: 1,
+      channel: "COUNTER",
+    });
+
+    expect(saleCreateAmount("salePriceInclAtSale")).toBe(30.19);
+    expect(saleCreateAmount("listPriceInclAtSale")).toBe(30.19);
+    expect(sale.hasDiscount).toBe(false);
+    expect(sale.discountTotalIncl).toBe(0);
+    expect(sale.discountReason).toBeNull();
+  });
+
+  it("accepteert een prijs van 0: weggeven mag", async () => {
+    arrangeSuccess({ newStock: 7 });
+
+    const { sale } = await registerSale({
+      partId: "part_1",
+      quantity: 2,
+      channel: "COUNTER",
+      unitPriceIncl: "0",
+    });
+
+    expect(saleCreateAmount("salePriceInclAtSale")).toBe(0);
+    expect(sale.lineTotalInclVat).toBe(0);
+    expect(sale.lineTotalExclVat).toBe(0);
+    expect(sale.discountPct).toBe(100);
+    expect(sale.discountTotalIncl).toBe(60.38);
+  });
+
+  it("weigert een negatieve prijs met een melding bij het prijsveld", async () => {
+    const error = await captureError({
+      partId: "part_1",
+      quantity: 1,
+      channel: "COUNTER",
+      unitPriceIncl: "-1,00",
+    });
+
+    const saleError = expectSaleError(error, "INVALID_INPUT");
+    expect(saleError.fieldErrors?.unitPriceIncl).toBe(
+      "De prijs mag niet negatief zijn",
+    );
+    // Niets geraakt: geen transactie, geen voorraadwijziging.
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("weigert een prijs met meer dan twee decimalen", async () => {
+    const error = await captureError({
+      partId: "part_1",
+      quantity: 1,
+      channel: "COUNTER",
+      unitPriceIncl: "27,175",
+    });
+
+    expectSaleError(error, "INVALID_INPUT");
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("legt een prijs BOVEN de normale prijs gewoon vast (waarschuwing, geen blokkade)", async () => {
+    arrangeSuccess({ newStock: 7 });
+
+    const { sale } = await registerSale({
+      partId: "part_1",
+      quantity: 1,
+      channel: "COUNTER",
+      unitPriceIncl: "35,00",
+    });
+
+    expect(saleCreateAmount("salePriceInclAtSale")).toBe(35);
+    expect(sale.hasDiscount).toBe(false);
+    expect(sale.discountPerUnitIncl).toBe(-4.81);
+  });
+
+  it("legt een prijs ONDER de inkoopprijs vast met een negatieve marge", async () => {
+    // Inkoop 12,50 excl. btw; 10,00 incl. btw is 8,26 excl. btw, dus de marge is
+    // negatief. De datalaag blokkeert dat niet (T26: waarschuwing, geen blokkade).
+    arrangeSuccess({ newStock: 7 });
+
+    const { sale } = await registerSale({
+      partId: "part_1",
+      quantity: 1,
+      channel: "COUNTER",
+      unitPriceIncl: "10,00",
+    });
+
+    expect(saleCreateAmount("salePriceInclAtSale")).toBe(10);
+    // 10,00 / 1,21 = 8,264... → 8,26, dus de marge is 8,26 - 12,50 = -4,24.
+    expect(sale.salePriceExclAtSale).toBe(8.26);
+    expect(
+      Number((sale.salePriceExclAtSale - 12.5).toFixed(2)),
+    ).toBe(-4.24);
+    // De inkoopprijs wordt historisch meegeschreven, zodat die marge later
+    // reconstrueerbaar blijft (SPEC §3 regel 3).
+    expect(saleCreateAmount("purchasePriceExclAtSale")).toBe(12.5);
+  });
+
+  it("gooit de reden weg als er geen korting gegeven is", async () => {
+    arrangeSuccess({ newStock: 7 });
+
+    await registerSale({
+      partId: "part_1",
+      quantity: 1,
+      channel: "COUNTER",
+      unitPriceIncl: "30,19",
+      discountReason: "zomaar",
+    });
+
+    expect(saleCreateData().discountReason).toBeNull();
+  });
+
+  it("verandert de standaardprijs van het onderdeel NIET", async () => {
+    arrangeSuccess({ newStock: 7 });
+
+    await registerSale({
+      partId: "part_1",
+      quantity: 1,
+      channel: "COUNTER",
+      unitPriceIncl: "27,17",
+    });
+
+    // De enige `Part`-update is de voorraadverlaging; er wordt niets aan de prijs
+    // gedaan (T26: "De standaardprijs van het onderdeel verandert nooit").
+    expect(txMock.part.updateMany).toHaveBeenCalledTimes(1);
+    const call = txMock.part.updateMany.mock.calls[0]?.[0] as {
+      data: Record<string, unknown>;
+    };
+    expect(Object.keys(call.data)).toEqual(["stockQuantity"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // listRecentSales
 // ---------------------------------------------------------------------------
 
@@ -596,6 +778,9 @@ describe("listRecentSales", () => {
         partId: "part_1",
         quantity: 2,
         salePriceInclAtSale: new Prisma.Decimal("30.19"),
+        // T26: geen korting op deze regel, dus normaal = betaald.
+        listPriceInclAtSale: new Prisma.Decimal("30.19"),
+        discountReason: null,
         vatRateAtSale: new Prisma.Decimal("21.00"),
         channel: "COUNTER",
         reference: null,
@@ -607,6 +792,8 @@ describe("listRecentSales", () => {
         partId: "part_2",
         quantity: 1,
         salePriceInclAtSale: new Prisma.Decimal("10.89"),
+        listPriceInclAtSale: new Prisma.Decimal("10.89"),
+        discountReason: null,
         vatRateAtSale: new Prisma.Decimal("21.00"),
         channel: "WORKSHOP",
         reference: "WO-2026-0412",
@@ -632,6 +819,18 @@ describe("listRecentSales", () => {
       vatRateAtSale: 21,
       lineTotalExclVat: 49.9,
       lineTotalInclVat: 60.38,
+      // T26: zonder korting is de normale prijs gelijk aan de betaalde prijs, is de
+      // korting 0 en 0,0%, en zijn de doorgestreepte totalen gelijk aan de echte.
+      listPriceInclAtSale: 30.19,
+      listPriceExclAtSale: 24.95,
+      discountPerUnitIncl: 0,
+      discountPct: 0,
+      hasDiscount: false,
+      discountTotalIncl: 0,
+      discountTotalExcl: 0,
+      lineTotalListInclVat: 60.38,
+      lineTotalListExclVat: 49.9,
+      discountReason: null,
       soldAt: SOLD_AT.toISOString(),
     });
     // Universeel onderdeel: geen merk.

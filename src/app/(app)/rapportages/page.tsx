@@ -88,7 +88,11 @@ export default async function RapportagesPage({
       ) : (
         <>
           {/* Kerncijfers */}
-          <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+          {/* Zes kaarten sinds T26 (de kortingsregel kwam erbij): op 375px twee naast
+              elkaar, vanaf `sm` drie, en pas vanaf `xl` alle zes op één regel. Bij
+              zes kolommen op een 1024px-scherm werd een bedrag van vier cijfers plus
+              het btw-label te smal. */}
+          <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
             {/* Omzet: incl. btw als hoofdbedrag, excl. eronder (T18). De marge
                 ernaast blijft uitsluitend excl., met de toelichting erbij — dit is de
                 plek waar "btw is winst" het meeste geld zou kosten. */}
@@ -124,6 +128,23 @@ export default async function RapportagesPage({
               <p className="text-sm text-gray-500">Transacties</p>
               <p className="mt-1 text-xl font-semibold text-gray-900">
                 {data.summary.transactionCount}
+              </p>
+            </Card>
+            {/* Totaal gegeven korting (T26): `Σ aantal × (normale prijs − betaalde
+                prijs)`, incl. btw als hoofdbedrag met excl. eronder — dezelfde vorm
+                als de omzet hierboven. De omzet ernaast is al de BETAALDE omzet, dus
+                deze kaart is geen aftrekpost maar laat zien hoeveel er is weggegeven. */}
+            <Card>
+              <p className="text-sm text-gray-500">Totaal gegeven korting</p>
+              <PriceWithVat
+                incl={data.summary.discountTotalIncl}
+                excl={data.summary.discountTotalExcl}
+                size="lg"
+                className="mt-1"
+              />
+              <p className="mt-0.5 text-xs text-gray-500">
+                Verschil tussen de normale prijs en wat er werkelijk betaald is. De
+                omzet hierboven is de betaalde omzet.
               </p>
             </Card>
           </div>
@@ -221,13 +242,16 @@ export default async function RapportagesPage({
               </a>
             }
           >
+            {/* T26, meegenomen kleine fix: de verwijzing naar `@/lib/csv` was
+                ontwikkelaarstaal en zei de winkelier niets. Wat er wél toe doet —
+                dat het bestand in Excel goed opent en dat de bedragen excl. btw
+                zijn — staat er nog. */}
             <p className="mb-3 text-xs text-gray-500">
               De CSV gebruikt een puntkomma als scheidingsteken en een komma als
-              decimaalteken (Excel-NL-conventie) en bevat een UTF-8 BOM zodat Excel
-              het bestand automatisch correct opent — zie de toelichting in{" "}
-              <code className="rounded bg-gray-100 px-1 py-0.5">@/lib/csv</code>. De
-              kolommen omzet en marge staan <strong>exclusief btw</strong>; dat staat
-              ook in de kopregel van het bestand.
+              decimaalteken, zodat Excel het bestand in het Nederlands meteen goed
+              opent. De kolommen omzet en marge staan{" "}
+              <strong>exclusief btw</strong>; dat staat ook in de kopregel van het
+              bestand.
             </p>
 
             <Table className="hidden md:block">

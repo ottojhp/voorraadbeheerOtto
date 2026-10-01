@@ -19,9 +19,13 @@ import { describe, expect, it } from "vitest";
 import {
   MIN_CONTAINED_LENGTH,
   MIN_TOKEN_LENGTH,
+  allowedCorrections,
+  approximateSubstringDistance,
   articleNumbersMatch,
+  damerauLevenshtein,
   extractArticleNumberTokens,
   matchScannedText,
+  minDistanceToOtherCandidate,
   normalizeArticleNumber,
   normalizedScanLines,
   type ArticleNumberCandidate,
@@ -374,5 +378,353 @@ describe("matchScannedText", () => {
     );
 
     expect(second).toEqual(first);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T25 — bewerkingsafstand
+// ---------------------------------------------------------------------------
+
+describe("damerauLevenshtein", () => {
+  it("is 0 voor gelijke tekst en de lengte tegenover niets", () => {
+    expect(damerauLevenshtein("P1A4T8412", "P1A4T8412")).toBe(0);
+    expect(damerauLevenshtein("", "")).toBe(0);
+    expect(damerauLevenshtein("ABC", "")).toBe(3);
+    expect(damerauLevenshtein("", "ABC")).toBe(3);
+  });
+
+  it("telt vervangen, invoegen en verwijderen elk als één stap", () => {
+    expect(damerauLevenshtein("8412", "8419")).toBe(1); // vervangen
+    expect(damerauLevenshtein("8412", "84112")).toBe(1); // invoegen
+    expect(damerauLevenshtein("8412", "812")).toBe(1); // verwijderen
+    expect(damerauLevenshtein("8412", "9419")).toBe(2);
+  });
+
+  it("rekent twee verwisselde tekens als ÉÉN stap, niet twee", () => {
+    // Dit is waarom het Damerau-Levenshtein moet zijn en niet gewoon
+    // Levenshtein: OCR draait regelmatig twee tekens om, en dat is één leesfout.
+    expect(damerauLevenshtein("8412", "8142")).toBe(1);
+    expect(damerauLevenshtein("PIA4T8412", "PIA4T8421")).toBe(1);
+  });
+
+  it("is de echte Damerau-Levenshtein en niet 'optimal string alignment'", () => {
+    // Het schoolvoorbeeld: met OSA is dit 3, met de echte afstand 2 (verwissel
+    // CA → AC en voeg de B in). De naam in de acceptatiecriteria is de echte.
+    expect(damerauLevenshtein("CA", "ABC")).toBe(2);
+  });
+
+  it("is symmetrisch", () => {
+    expect(damerauLevenshtein("REM21P001", "P1A4T8412")).toBe(
+      damerauLevenshtein("P1A4T8412", "REM21P001"),
+    );
+  });
+
+  it("kapt af boven de meegegeven grens", () => {
+    // De exacte waarde boven de grens is niet betrouwbaar; dat hij GROTER is dan
+    // de grens, is wat de aanroeper gebruikt.
+    expect(damerauLevenshtein("AAAA", "BBBB", 1)).toBeGreaterThan(1);
+    expect(damerauLevenshtein("AAAA", "AAAAAAAAAA", 2)).toBeGreaterThan(2);
+    // En binnen de grens blijft hij exact.
+    expect(damerauLevenshtein("8412", "8419", 2)).toBe(1);
+  });
+});
+
+describe("approximateSubstringDistance", () => {
+  it("maakt de randen gratis: een nummer dat ergens in de regel staat is 0", () => {
+    expect(approximateSubstringDistance("P1A4T8455", "ARTNRP1A4T8455")).toBe(0);
+    expect(approximateSubstringDistance("P1A4T8455", "P1A4T8455EAN871")).toBe(0);
+  });
+
+  it("meet in zo'n regel precies de fouten in het nummer zelf", () => {
+    // Dit is letterlijk wat T20 op een 10° gedraaid beeld las voor PIA-4T-8455:
+    // "Art.nr- PlA-4T.g 455" → sleutel ARTNRP1A4TG455. Eén teken fout (G voor 8),
+    // en dat moet ook één zijn en niet vijf.
+    expect(approximateSubstringDistance("P1A4T8455", "ARTNRP1A4TG455")).toBe(1);
+  });
+
+  it("geeft de lengte terug als er niets te vinden is", () => {
+    expect(approximateSubstringDistance("ABC", "")).toBe(3);
+    expect(approximateSubstringDistance("", "ABC")).toBe(0);
+  });
+});
+
+describe("allowedCorrections", () => {
+  it("volgt de criteria: 2 vanaf 6 tekens, 1 bij kortere", () => {
+    expect(allowedCorrections(6)).toBe(2);
+    expect(allowedCorrections(9)).toBe(2);
+    expect(allowedCorrections(13)).toBe(2);
+    expect(allowedCorrections(5)).toBe(1);
+    expect(allowedCorrections(4)).toBe(1);
+    expect(allowedCorrections(3)).toBe(1);
+  });
+
+  it("staat bij heel korte nummers helemaal niets toe", () => {
+    // Een nummer van twee tekens waarin één teken gecorrigeerd mag worden, matcht
+    // op bijna elke andere code van twee tekens. Dat is geen hulp maar een val.
+    expect(allowedCorrections(2)).toBe(0);
+    expect(allowedCorrections(1)).toBe(0);
+    expect(allowedCorrections(0)).toBe(0);
+    expect(allowedCorrections(Number.NaN)).toBe(0);
+  });
+});
+
+describe("minDistanceToOtherCandidate", () => {
+  it("meet de afstand naar het dichtstbijzijnde nummer van een ANDER onderdeel", () => {
+    // PIA-4T-8412 en PIA-4T-8455 staan op afstand 2 van elkaar.
+    expect(
+      minDistanceToOtherCandidate(normalizeArticleNumber("PIA-4T-8412"), "p1", PARTS),
+    ).toBe(2);
+    // REM-ZIP-001 en REM-ZIP-002 op afstand 1.
+    expect(
+      minDistanceToOtherCandidate(normalizeArticleNumber("REM-ZIP-001"), "p1", PARTS),
+    ).toBe(1);
+  });
+
+  it("negeert de andere nummers van hetzelfde onderdeel", () => {
+    // De sku, barcode en het leveranciersnummer van p1 wijzen naar hetzelfde
+    // artikel; onderling kunnen ze dus geen verwarring opleveren. Zonder deze
+    // uitzondering zou elk onderdeel zijn eigen drempel verpesten.
+    const distance = minDistanceToOtherCandidate(
+      normalizeArticleNumber("PEU-AF-72310"),
+      "p3",
+      PARTS,
+    );
+    expect(distance).toBeGreaterThan(2);
+  });
+
+  it("is oneindig als er geen ander nummer is", () => {
+    expect(minDistanceToOtherCandidate("P1A4T8412", "p1", [PARTS[0]])).toBe(
+      Number.POSITIVE_INFINITY,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T25 — benaderend matchen
+// ---------------------------------------------------------------------------
+
+describe("matchScannedText met approximate", () => {
+  const approx = { approximate: true } as const;
+
+  it("staat standaard UIT", () => {
+    // Wie de oude, strenge werking wil, krijgt die nog steeds. Benaderend matchen
+    // is een keuze van de aanroeper, niet iets wat er ongemerkt bijkomt.
+    expect(matchScannedText("PEU-AF-72319", PARTS)).toEqual([]);
+  });
+
+  it("vindt het onderdeel bij één verkeerd gelezen teken", () => {
+    // Een 9 voor een 0 valt buiten het verwisselingslijstje (O/0, I/1, S/5, B/8,
+    // Z/2) en liet in T20 dus de hele scan mislukken.
+    const matches = matchScannedText("PEU-AF-72319", PARTS, approx);
+
+    expect(matches).toHaveLength(1);
+    expect(matches[0].candidate.id).toBe("p3");
+    expect(matches[0].kind).toBe("approximate");
+    expect(matches[0].distance).toBe(1);
+    expect(matches[0].value).toBe("PEU-AF-72310");
+  });
+
+  it("vindt het onderdeel bij twee verwisselde tekens", () => {
+    const matches = matchScannedText("PEU-AF-72301", PARTS, approx);
+
+    expect(matches.map((match) => match.candidate.id)).toEqual(["p3"]);
+    expect(matches[0].distance).toBe(1);
+  });
+
+  it("leest het nummer uit een regel met tekst eromheen", () => {
+    // Het gemeten geval uit T20: 10° gedraaid beeld, PIA-4T-8455 gelezen als
+    // "Art.nr- PlA-4T.g 455". Dat leverde toen GEEN treffer op; dit is de reden
+    // dat T25 bestaat.
+    const matches = matchScannedText("Art.nr- PlA-4T.g 455", PARTS, approx);
+
+    expect(matches).toHaveLength(1);
+    expect(matches[0].candidate.id).toBe("p2");
+    expect(matches[0].value).toBe("PIA-4T-8455");
+    expect(matches[0].distance).toBe(1);
+  });
+
+  it("gebruikt benaderend matchen alleen als er niets hards is", () => {
+    // p1 staat er exact in; p3 zou op afstand 1 liggen. Alleen de harde treffer
+    // komt terug, zodat de gebruiker niet tussen zeker en onzeker moet kiezen.
+    const matches = matchScannedText("REM-ZIP-001 PEU-AF-72319", PARTS, approx);
+
+    expect(matches.map((match) => match.candidate.id)).toEqual(["p1"]);
+    expect(matches[0].kind).toBe("exact");
+    expect(matches[0].distance).toBe(0);
+  });
+
+  it("doet niets bij een barcode: die houdt zijn strenge pad", () => {
+    // De eigenaar meldde dat barcodes goed werken. Eén cijfer naast een bestaande
+    // EAN mag nooit een treffer worden; `exactOnly` overrulet `approximate`.
+    expect(
+      matchScannedText("8712345000018", PARTS, {
+        ...approx,
+        exactOnly: true,
+      }),
+    ).toEqual([]);
+  });
+
+  it("toont BEIDE kandidaten op dezelfde afstand en kiest er nooit één", () => {
+    // Precies tussen NZ-TYR-10080-16 en NZ-TYR-12070-12 in: van beide twee tekens
+    // verwijderd. Dan hoort de gebruiker te kiezen (criterium "nooit gokken").
+    const matches = matchScannedText("NZ-TYR-10070-19", PARTS, approx);
+
+    expect(matches.length).toBeGreaterThan(1);
+    expect(matches.map((match) => match.candidate.id).sort()).toEqual([
+      "p5",
+      "p6",
+    ]);
+    for (const match of matches) {
+      expect(match.distance).toBe(matches[0].distance);
+    }
+  });
+
+  it("laat een verdere kandidaat weg als er een dichtere is", () => {
+    // Afstand 1 is harder bewijs dan afstand 2; ze naast elkaar zetten zou de
+    // gebruiker laten kiezen tussen ongelijkwaardige dingen.
+    const matches = matchScannedText("NGK-CR7H5B", PARTS, approx);
+
+    expect(matches).toHaveLength(1);
+    expect(matches[0].candidate.id).toBe("p4");
+    expect(matches[0].distance).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T25 — en nu de belangrijkste helft: GEEN valse treffers
+// ---------------------------------------------------------------------------
+
+describe("matchScannedText: valse treffers zijn erger dan geen treffer", () => {
+  const approx = { approximate: true } as const;
+
+  it("matcht twee écht verschillende nummers nooit op elkaar", () => {
+    // Elk nummer van elk onderdeel, letterlijk gescand, mag NOOIT een ander
+    // onderdeel aanwijzen. Dit is de test die bewijst dat de hele voorraadlijst
+    // intern consistent is onder deze regels.
+    for (const part of PARTS) {
+      for (const value of [part.sku, part.barcode, part.supplierArticleNumber]) {
+        if (value === null) {
+          continue;
+        }
+        const matches = matchScannedText(value, PARTS, approx);
+        expect(matches.length).toBeGreaterThan(0);
+        for (const match of matches) {
+          expect(match.candidate.id).toBe(part.id);
+        }
+      }
+    }
+  });
+
+  it("wijst bij nummers die op elkaar lijken liever NIETS aan", () => {
+    // PIA-4T-8412 en PIA-4T-8455 staan op afstand 2 van elkaar. Een scan die van
+    // beide 2 tekens afwijkt, mag er geen van de twee uitkiezen — de drempel
+    // wordt juist STRENGER omdat de bekende nummers op elkaar lijken.
+    expect(matchScannedText("PIA-4T-8499", PARTS, approx)).toEqual([]);
+    // REM-ZIP-001 en REM-ZIP-002 staan op afstand 1: daar is zelfs één correctie
+    // al te veel.
+    expect(matchScannedText("REM-ZIP-009", PARTS, approx)).toEqual([]);
+    expect(matchScannedText("REM-ZIP-003", PARTS, approx)).toEqual([]);
+  });
+
+  it("maakt van onzin geen onderdeel", () => {
+    for (const nonsense of [
+      "QQQQQQQQQ",
+      "1234567890123",
+      "REMBLOKKEN SCOOTER",
+      "Made in Italy 2026",
+      "XX-YY-9999",
+      "99999999999999999999",
+    ]) {
+      const matches = matchScannedText(nonsense, PARTS, approx);
+      for (const match of matches) {
+        // Als er al iets terugkomt, mag het nooit een benaderende gok zijn.
+        expect(match.kind).not.toBe("approximate");
+      }
+    }
+  });
+
+  it("wijst bij één verminkt teken nooit UITSLUITEND een ander onderdeel aan", () => {
+    // De sterkste eigenschap die hier te bewijzen is, en systematisch getest in
+    // plaats van met een handvol voorbeelden: verminkt elk teken van elk nummer
+    // van elk onderdeel, één voor één, met vier vervangingen. Dan is de uitkomst
+    // altijd één van deze drie:
+    //
+    //  - niets (de app durft het niet, dat mag altijd);
+    //  - het JUISTE onderdeel staat ertussen;
+    //  - of de verminking is per ongeluk exact het nummer van een ander
+    //    onderdeel geworden — dan is dát de juiste treffer en geen valse.
+    //
+    // Wat NIET mag gebeuren is dat er alleen een verkeerd onderdeel staat. Dat
+    // zou aan de balie leiden tot een voorraadmutatie op het verkeerde artikel.
+    let withMatch = 0;
+    let withoutMatch = 0;
+
+    for (const part of PARTS) {
+      for (const value of [part.sku, part.barcode, part.supplierArticleNumber]) {
+        if (value === null) {
+          continue;
+        }
+        for (let index = 0; index < value.length; index += 1) {
+          if (!/[A-Z0-9]/i.test(value[index])) {
+            continue;
+          }
+          for (const replacement of ["Q", "7", "3", "X"]) {
+            const broken =
+              value.slice(0, index) + replacement + value.slice(index + 1);
+            const matches = matchScannedText(broken, PARTS, approx);
+            if (matches.length === 0) {
+              withoutMatch += 1;
+              continue;
+            }
+            withMatch += 1;
+
+            const ids = matches.map((match) => match.candidate.id);
+            if (ids.includes(part.id)) {
+              continue;
+            }
+            // Geen treffer op het eigen onderdeel: dan MOET de verminkte tekst
+            // letterlijk het nummer van het aangewezen onderdeel zijn.
+            for (const match of matches) {
+              expect(normalizeArticleNumber(match.value)).toBe(
+                normalizeArticleNumber(broken),
+              );
+            }
+          }
+        }
+      }
+    }
+
+    // Dat deze test iets te controleren had: er moeten verminkingen bij zitten
+    // die wél een treffer opleveren, anders bewijst hij niets.
+    expect(withMatch).toBeGreaterThan(50);
+    expect(withoutMatch).toBeGreaterThan(0);
+  });
+
+  it("corrigeert nooit meer tekens dan toegestaan", () => {
+    // Drie tekens fout op een nummer van 12 blijft onder de grens van 2.
+    expect(matchScannedText("NZ-TYR-99999-16", PARTS, approx)).toEqual([]);
+    // En een kort nummer mag maar één correctie krijgen.
+    const short: TestPart[] = [
+      {
+        id: "s1",
+        name: "Kort",
+        sku: "A1B2",
+        barcode: null,
+        supplierArticleNumber: null,
+      },
+    ];
+    expect(matchScannedText("A1B7", short, approx)).toHaveLength(1);
+    expect(matchScannedText("A7B7", short, approx)).toEqual([]);
+  });
+
+  it("is deterministisch, ook benaderend", () => {
+    const text = "NZ-TYR-10070-19";
+    const first = matchScannedText(text, PARTS, approx).map((m) => m.candidate.id);
+    const second = matchScannedText(text, [...PARTS].reverse(), approx).map(
+      (m) => m.candidate.id,
+    );
+
+    expect(second).toEqual(first);
+    expect(first.length).toBeGreaterThan(0);
   });
 });

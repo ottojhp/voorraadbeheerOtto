@@ -503,6 +503,9 @@ export async function searchPartsForSale(
       stockQuantity: true,
       salePriceIncl: true,
       vatRate: true,
+      // T26: het verkoopscherm toont de resterende marge bij een korting en
+      // waarschuwt zodra de prijs onder de inkoopprijs zakt.
+      purchasePriceExcl: true,
       brand: { select: { name: true } },
     },
     orderBy: [{ name: "asc" }, { id: "asc" }],
@@ -524,6 +527,7 @@ export async function searchPartsForSale(
       salePriceIncl,
       vatRate,
       salePriceExcl: priceExclVat(salePriceIncl, vatRate),
+      purchasePriceExcl: toNumber(row.purchasePriceExcl),
     };
   });
 }
@@ -628,6 +632,11 @@ export async function findPartsByScannedText(
     // Een barcode is een complete code: die hoort exact of (na normalisatie)
     // precies te matchen, nooit "zit ergens in". Zie `matchScannedText`.
     exactOnly: source === "barcode",
+    // Benaderend matchen (T25) alleen voor de twee bronnen waar tekens verkeerd
+    // gelezen of getypt worden. De barcode werkt goed en houdt zijn strenge pad;
+    // `exactOnly` zou dit sowieso overrulen, maar het staat hier expliciet zodat
+    // niemand de voorrang per ongeluk omdraait.
+    approximate: source !== "barcode",
   });
 
   return matches.map((match) => ({
@@ -635,6 +644,7 @@ export async function findPartsByScannedText(
     field: match.field,
     value: match.value,
     kind: match.kind,
+    distance: match.distance,
   }));
 }
 

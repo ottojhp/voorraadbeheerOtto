@@ -94,11 +94,19 @@ export interface PartSaleOptionDTO {
   sku: string;
   barcode: string | null;
   stockQuantity: number;
-  /** INCL. btw — zoals opgeslagen; dit is het bedrag dat de klant betaalt. */
+  /** INCL. btw — zoals opgeslagen; dit is de NORMALE prijs die de klant betaalt. */
   salePriceIncl: number;
   vatRate: number;
   /** Afgeleid uit `salePriceIncl`; het excl.-bedrag achter de kassaprijs. */
   salePriceExcl: number;
+  /**
+   * Inkoopprijs per stuk EXCL. btw (T26). Het verkoopscherm heeft die nodig om bij
+   * een korting de resterende MARGE te laten zien en te waarschuwen zodra de prijs
+   * onder de inkoopprijs zakt. Marge is altijd excl. − excl. (SPEC §3 regel 0), dus
+   * de prijs die de balie invult wordt eerst met `priceExclVat` teruggerekend voordat
+   * hij met dit bedrag vergeleken wordt.
+   */
+  purchasePriceExcl: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -243,8 +251,17 @@ export interface PartScanMatchDTO {
   field: "barcode" | "sku" | "supplierArticleNumber";
   /** De opgeslagen waarde die matchte (niet wat de camera meende te lezen). */
   value: string;
-  /** `exact` | `normalized` | `contained` — zie `@/lib/article-number`. */
-  kind: "exact" | "normalized" | "contained";
+  /**
+   * `exact` | `normalized` | `contained` | `approximate` — zie
+   * `@/lib/article-number`.
+   */
+  kind: "exact" | "normalized" | "contained" | "approximate";
+  /**
+   * Aantal tekens dat gecorrigeerd moest worden om op dit nummer uit te komen
+   * (T25). Alleen gevuld bij `kind: "approximate"`; ontbrekend of `0` betekent
+   * "er is niets geïnterpreteerd aan de losse tekens".
+   */
+  distance?: number;
 }
 
 /** Generiek pagineringsresultaat. */

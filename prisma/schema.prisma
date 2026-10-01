@@ -186,9 +186,26 @@ model Sale {
   /// Altijd > 0; afgedwongen in de Zod-validatie, niet in de database.
   quantity Int
 
-  /// Verkoopprijs per stuk INCLUSIEF btw op het moment van verkoop: exact het bedrag
-  /// dat de klant betaalde (SPEC §3 regel 0, v2.0).
+  /// De WERKELIJK BETAALDE prijs per stuk INCLUSIEF btw: exact het bedrag dat de
+  /// klant per stuk heeft afgerekend, inclusief een eventuele korting
+  /// (SPEC §3 regel 0, v2.0; betekenis verscherpt in T26).
+  ///
+  /// Alle rapportages, het dashboard en de bestsellers rekenen met DIT veld, dus met
+  /// het betaalde bedrag — nooit met `listPriceInclAtSale`. Mag `0` zijn (iets
+  /// weggeven), nooit negatief (CHECK in de migratie).
   salePriceInclAtSale     Decimal @db.Decimal(10, 2)
+  /// De NORMALE prijs per stuk INCLUSIEF btw zoals die op het moment van verkoop op
+  /// het onderdeel stond (T26). Samen met `salePriceInclAtSale` maakt dit de gegeven
+  /// korting achteraf reconstrueerbaar:
+  /// `korting = quantity * (listPriceInclAtSale - salePriceInclAtSale)`.
+  ///
+  /// Apart opslaan en niet uit `Part.salePriceIncl` aflezen: dat is precies SPEC §3
+  /// regel 3 (historische correctheid). Een prijswijziging van volgende week mag de
+  /// korting van vandaag niet herschrijven.
+  ///
+  /// Bij een verkoop zonder korting is dit bedrag gelijk aan `salePriceInclAtSale`;
+  /// de migratie heeft bestaande rijen zo gevuld.
+  listPriceInclAtSale     Decimal @db.Decimal(10, 2)
   /// Inkoopprijs per stuk EXCLUSIEF btw op het moment van verkoop.
   purchasePriceExclAtSale Decimal @db.Decimal(10, 2)
   /// Btw-tarief op moment van verkoop, zodat het excl.-bedrag — en daarmee de marge —
@@ -200,6 +217,11 @@ model Sale {
   /// Vrije verwijzing naar de werkorder. GEEN persoonsgegevens: geen klantnaam,
   /// geen kenteken (AVG).
   reference String?
+
+  /// Waarom er korting gegeven is, bv. "beschadigde doos" of "actie remblokken"
+  /// (T26). Optioneel en vrij tekst. GEEN persoonsgegevens (AVG), net als
+  /// `reference`; het verkoopscherm waarschuwt daarvoor bij het veld.
+  discountReason String?
 
   soldAt DateTime @default(now())
   note   String?

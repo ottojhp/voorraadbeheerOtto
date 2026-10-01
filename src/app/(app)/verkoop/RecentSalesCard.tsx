@@ -26,6 +26,7 @@ import { Card } from "@/components/Card";
 import { PriceWithVat } from "@/components/PriceWithVat";
 import { formatCompactDateTime } from "@/lib/datetime";
 import { SALE_CHANNEL_LABELS } from "@/lib/labels";
+import { formatEuro, formatPercent } from "@/lib/money";
 import { listRecentSales, type RecentSaleDTO } from "@/lib/queries/sales";
 
 /** Resultaat van het ophalen: gelukt met data, of mislukt met een toonbare melding. */
@@ -88,15 +89,31 @@ export async function RecentSalesCard({ limit }: RecentSalesCardProps) {
                   {sale.reference ? ` · ${sale.reference}` : ""} ·{" "}
                   {formatCompactDateTime(sale.soldAt)}
                 </p>
+                {/* Gegeven korting met de reden, als die er is (T26). */}
+                {sale.hasDiscount && (
+                  <p className="text-xs text-amber-800">
+                    {formatEuro(sale.discountTotalIncl)} korting (
+                    {formatPercent(sale.discountPct)})
+                    {sale.discountReason ? ` · ${sale.discountReason}` : ""}
+                  </p>
+                )}
               </div>
               {/* Het betaalde bedrag (incl. btw) is het hoofdbedrag; het
-                  excl.-stuurgetal staat eronder (T18). */}
-              <PriceWithVat
-                incl={sale.lineTotalInclVat}
-                excl={sale.lineTotalExclVat}
-                align="right"
-                className="shrink-0"
-              />
+                  excl.-stuurgetal staat eronder (T18). Is er korting gegeven, dan
+                  staat de originele prijs doorgestreept erboven (T26) — zo is in
+                  één blik te zien dát er korting is gegeven. */}
+              <div className="shrink-0 text-right">
+                {sale.hasDiscount && (
+                  <s className="block whitespace-nowrap text-xs text-gray-400">
+                    {formatEuro(sale.lineTotalListInclVat)}
+                  </s>
+                )}
+                <PriceWithVat
+                  incl={sale.lineTotalInclVat}
+                  excl={sale.lineTotalExclVat}
+                  align="right"
+                />
+              </div>
             </li>
           ))}
         </ul>

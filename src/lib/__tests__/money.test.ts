@@ -1,11 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyDiscountAmount,
+  applyDiscountPct,
+  calcDiscountAmount,
+  calcDiscountPct,
   calcLineTotal,
   calcMargin,
   calcMarginPct,
+  describeSalePricing,
   formatEuro,
+  formatPercent,
   priceExclVat,
   priceWithVat,
+  readMoneyInput,
+  toMoneyInput,
 } from "@/lib/money";
 
 describe("formatEuro", () => {
@@ -162,5 +170,199 @@ describe("calcLineTotal", () => {
     const excl = priceExclVat(incl, 21);
     expect(calcLineTotal(incl, 3)).toBe(59.97);
     expect(calcLineTotal(excl, 3)).toBe(49.56);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Korting (T26)
+// ---------------------------------------------------------------------------
+
+describe("formatPercent", () => {
+  it("formatteert met één decimaal en een Nederlandse komma", () => {
+    expect(formatPercent(10)).toBe("10,0%");
+    expect(formatPercent(12.5)).toBe("12,5%");
+    expect(formatPercent(0)).toBe("0,0%");
+  });
+
+  it("rondt af op één decimaal", () => {
+    expect(formatPercent(10.003)).toBe("10,0%");
+    expect(formatPercent(24.95)).toBe("25,0%");
+  });
+});
+
+describe("toMoneyInput", () => {
+  it("geeft altijd twee decimalen met een komma", () => {
+    expect(toMoneyInput(30.19)).toBe("30,19");
+    expect(toMoneyInput(27)).toBe("27,00");
+    expect(toMoneyInput(0)).toBe("0,00");
+  });
+});
+
+describe("readMoneyInput", () => {
+  it("accepteert komma én punt als decimaalteken", () => {
+    expect(readMoneyInput("12,50", "De prijs")).toEqual({ ok: true, value: 12.5 });
+    expect(readMoneyInput("12.50", "De prijs")).toEqual({ ok: true, value: 12.5 });
+    expect(readMoneyInput(" 30,19 ", "De prijs")).toEqual({ ok: true, value: 30.19 });
+  });
+
+  it("staat 0 toe: iets weggeven mag", () => {
+    expect(readMoneyInput("0", "De prijs")).toEqual({ ok: true, value: 0 });
+    expect(readMoneyInput("0,00", "De prijs")).toEqual({ ok: true, value: 0 });
+  });
+
+  it("weigert een negatief bedrag met een melding die dát zegt", () => {
+    const result = readMoneyInput("-5", "De prijs");
+    expect(result.ok).toBe(false);
+    // Niet "moet een getal zijn": de gebruiker typte een geldig getal, het mag
+    // alleen niet negatief zijn.
+    expect(result.ok === false && result.error).toBe(
+      "De prijs mag niet negatief zijn",
+    );
+  });
+
+  it("weigert meer dan twee decimalen en onzin", () => {
+    expect(readMoneyInput("12,505", "De prijs").ok).toBe(false);
+    expect(readMoneyInput("abc", "De prijs").ok).toBe(false);
+    expect(readMoneyInput("", "De prijs").ok).toBe(false);
+  });
+
+  it("zet het meegegeven label vooraan in elke melding", () => {
+    const result = readMoneyInput("abc", "Het kortingsbedrag");
+    expect(result.ok === false && result.error).toContain("Het kortingsbedrag");
+  });
+});
+
+describe("applyDiscountPct", () => {
+  it("rondt de nieuwe prijs af op centen", () => {
+    // 10% van 30,19 is 27,171 — daar kan niemand mee afrekenen.
+    expect(applyDiscountPct(30.19, 10)).toBe(27.17);
+    expect(applyDiscountPct(30.19, 5)).toBe(28.68);
+    expect(applyDiscountPct(30.19, 15)).toBe(25.66);
+  });
+
+  it("laat de prijs ongemoeid bij 0%", () => {
+    expect(applyDiscountPct(30.19, 0)).toBe(30.19);
+  });
+
+  it("kapt af op 0 in plaats van een negatieve prijs te geven", () => {
+    expect(applyDiscountPct(30.19, 100)).toBe(0);
+    expect(applyDiscountPct(30.19, 150)).toBe(0);
+  });
+});
+
+describe("applyDiscountAmount", () => {
+  it("trekt het bedrag af en rondt af op centen", () => {
+    expect(applyDiscountAmount(30.19, 5)).toBe(25.19);
+    expect(applyDiscountAmount(30.19, 0.1)).toBe(30.09);
+  });
+
+  it("kapt af op 0 bij een korting groter dan de prijs", () => {
+    expect(applyDiscountAmount(30.19, 40)).toBe(0);
+  });
+});
+
+describe("calcDiscountAmount en calcDiscountPct", () => {
+  it("rekent de korting uit het verschil van de twee prijzen", () => {
+    expect(calcDiscountAmount(30.19, 27.17)).toBe(3.02);
+    expect(calcDiscountPct(30.19, 27.17)).toBe(10);
+  });
+
+  it("is consistent: percentage en bedrag horen bij dezelfde afgeronde prijs", () => {
+    // Dit is de kern van de eis in T26. De nieuwe prijs wordt afgerond, en het
+    // percentage wordt UIT die afgeronde prijs afgeleid. 3,02 / 30,19 = 10,0033%,
+    // dus afgerond op twee decimalen 10. Zou het percentage uit het onafgeronde
+    // bedrag komen, dan stond er 10,00% naast een bedrag van 3,019.
+    const nieuw = applyDiscountPct(30.19, 10);
+    const bedrag = calcDiscountAmount(30.19, nieuw);
+    const pct = calcDiscountPct(30.19, nieuw);
+    expect(nieuw).toBe(27.17);
+    expect(bedrag).toBe(3.02);
+    expect(formatPercent(pct)).toBe("10,0%");
+    // En het bedrag is exact het verschil dat op het scherm staat.
+    expect(Number((30.19 - nieuw).toFixed(2))).toBe(bedrag);
+  });
+
+  it("geeft een negatief bedrag als er méér dan normaal betaald is", () => {
+    expect(calcDiscountAmount(30.19, 35)).toBe(-4.81);
+    expect(calcDiscountPct(30.19, 35)).toBeLessThan(0);
+  });
+
+  it("geeft 0% bij een normale prijs van 0 in plaats van NaN", () => {
+    expect(calcDiscountPct(0, 0)).toBe(0);
+    expect(Number.isNaN(calcDiscountPct(0, 0))).toBe(false);
+  });
+});
+
+describe("describeSalePricing", () => {
+  it("rekent een regel met 10% korting volledig door", () => {
+    const pricing = describeSalePricing(30.19, 27.17, 21, 2);
+
+    expect(pricing).toEqual({
+      vatRate: 21,
+      quantity: 2,
+      listPriceIncl: 30.19,
+      // 30,19 / 1,21 = 24,9504... → 24,95
+      listPriceExcl: 24.95,
+      paidPriceIncl: 27.17,
+      // 27,17 / 1,21 = 22,4545... → 22,45
+      paidPriceExcl: 22.45,
+      discountPerUnitIncl: 3.02,
+      discountPct: 10,
+      hasDiscount: true,
+      isSurcharge: false,
+      lineTotalListIncl: 60.38,
+      lineTotalListExcl: 49.9,
+      lineTotalPaidIncl: 54.34,
+      lineTotalPaidExcl: 44.9,
+      discountTotalIncl: 6.04,
+      discountTotalExcl: 5,
+    });
+  });
+
+  it("meldt geen korting als er niets gegeven is", () => {
+    const pricing = describeSalePricing(30.19, 30.19, 21, 3);
+    expect(pricing.hasDiscount).toBe(false);
+    expect(pricing.isSurcharge).toBe(false);
+    expect(pricing.discountPerUnitIncl).toBe(0);
+    expect(pricing.discountTotalIncl).toBe(0);
+    expect(pricing.discountTotalExcl).toBe(0);
+    // Zonder korting is het doorgestreepte totaal gelijk aan het echte totaal.
+    expect(pricing.lineTotalListIncl).toBe(pricing.lineTotalPaidIncl);
+  });
+
+  it("markeert een prijs boven de normale prijs als toeslag", () => {
+    const pricing = describeSalePricing(30.19, 35, 21, 1);
+    expect(pricing.hasDiscount).toBe(false);
+    expect(pricing.isSurcharge).toBe(true);
+    expect(pricing.discountPerUnitIncl).toBe(-4.81);
+  });
+
+  it("staat een prijs van 0 toe (weggeven) en geeft dan 100% korting", () => {
+    const pricing = describeSalePricing(30.19, 0, 21, 1);
+    expect(pricing.paidPriceIncl).toBe(0);
+    expect(pricing.paidPriceExcl).toBe(0);
+    expect(pricing.discountPct).toBe(100);
+    expect(pricing.lineTotalPaidIncl).toBe(0);
+    expect(pricing.discountTotalIncl).toBe(30.19);
+  });
+
+  it("laat het kortingstotaal optellen tot het verschil van de twee regeltotalen", () => {
+    // Niet `aantal × korting per stuk`, maar het verschil tussen de twee totalen die
+    // ernaast op het scherm staan — anders klopt de optelling op het scherm niet.
+    const pricing = describeSalePricing(19.99, 17.99, 9, 7);
+    expect(pricing.discountTotalIncl).toBe(
+      calcDiscountAmount(pricing.lineTotalListIncl, pricing.lineTotalPaidIncl),
+    );
+    expect(pricing.discountTotalExcl).toBe(
+      calcDiscountAmount(pricing.lineTotalListExcl, pricing.lineTotalPaidExcl),
+    );
+  });
+
+  it("rekent de excl.-bedragen met het meegegeven btw-tarief, ook bij 9%", () => {
+    const pricing = describeSalePricing(10.9, 9.81, 9, 1);
+    // 10,90 / 1,09 = 10,00 exact; 9,81 / 1,09 = 9,00 exact.
+    expect(pricing.listPriceExcl).toBe(10);
+    expect(pricing.paidPriceExcl).toBe(9);
+    expect(pricing.discountTotalExcl).toBe(1);
   });
 });

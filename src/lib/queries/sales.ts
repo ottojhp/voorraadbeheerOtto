@@ -22,7 +22,7 @@ import { Prisma, StockMutationReason } from "@prisma/client";
 
 import { prisma } from "@/lib/db";
 import type { SaleChannel } from "@/lib/labels";
-import { calcLineTotal, priceExclVat } from "@/lib/money";
+import { describeSalePricing } from "@/lib/money";
 import { saleSchema, type SaleInput } from "@/lib/validation/sales";
 
 // ---------------------------------------------------------------------------
@@ -97,8 +97,54 @@ export function isSaleError(error: unknown): error is SaleError {
 // DTO's
 // ---------------------------------------------------------------------------
 
+/**
+ * De prijs- en kortingsvelden die élke verkoopweergave nodig heeft (T26).
+ *
+ * Eén keer gedefinieerd en door beide DTO's hieronder geërfd, zodat de bevestiging na
+ * een verkoop, "Laatste verkopen" op het verkoopscherm en "Laatste verkopen" op het
+ * dashboard per constructie dezelfde getallen tot hun beschikking hebben. Drie
+ * weergaven die elk hun eigen deelverzameling kregen was de zekerste manier om op één
+ * van de drie de doorgestreepte originele prijs te vergeten.
+ *
+ * Alle bedragen komen uit `describeSalePricing()` in `@/lib/money`, dezelfde functie
+ * die het verkoopscherm voor de live-weergave gebruikt.
+ */
+export interface SalePricingFieldsDTO {
+  /**
+   * De WERKELIJK BETAALDE prijs per stuk INCL. btw, zoals historisch vastgelegd:
+   * exact het bedrag dat de klant per stuk afrekende, korting inbegrepen.
+   */
+  salePriceInclAtSale: number;
+  /** Btw-percentage op het moment van verkoop, bv. `21`. */
+  vatRateAtSale: number;
+  /** Afgeleid uit `salePriceInclAtSale`; de excl.-basis voor marge en rapportages. */
+  salePriceExclAtSale: number;
+  /** De NORMALE prijs per stuk INCL. btw op het moment van verkoop (T26). */
+  listPriceInclAtSale: number;
+  /** Afgeleid uit `listPriceInclAtSale`. */
+  listPriceExclAtSale: number;
+  /** Korting per stuk incl. btw; negatief als er méér dan normaal betaald is. */
+  discountPerUnitIncl: number;
+  /** Korting in procenten van de normale prijs, consistent met het bedrag. */
+  discountPct: number;
+  /** `true` zodra er werkelijk korting gegeven is. */
+  hasDiscount: boolean;
+  /** `quantity * (normale prijs - betaalde prijs)`, incl. resp. excl. btw. */
+  discountTotalIncl: number;
+  discountTotalExcl: number;
+  /** `quantity * normale prijs` — het bedrag dat de UI doorstreept. */
+  lineTotalListInclVat: number;
+  lineTotalListExclVat: number;
+  /** `quantity * betaalde prijs`: wat er werkelijk afgerekend is. */
+  lineTotalInclVat: number;
+  /** `quantity * salePriceExclAtSale`, dus het afgeleide excl.-regeltotaal. */
+  lineTotalExclVat: number;
+  /** Vrije toelichting bij de korting; `null` als er geen reden ingevuld is. */
+  discountReason: string | null;
+}
+
 /** Resultaat van een geslaagde verkoop; alles wat het bevestigingsscherm nodig heeft. */
-export interface SaleResultDTO {
+export interface SaleResultDTO extends SalePricingFieldsDTO {
   saleId: string;
   partId: string;
   partName: string;
@@ -107,19 +153,6 @@ export interface SaleResultDTO {
   quantity: number;
   channel: SaleChannel;
   reference: string | null;
-  /**
-   * Prijs per stuk INCL. btw, zoals vastgelegd op het moment van verkoop: exact het
-   * bedrag dat de klant per stuk betaalde.
-   */
-  salePriceInclAtSale: number;
-  /** Btw-percentage op het moment van verkoop, bv. `21`. */
-  vatRateAtSale: number;
-  /** Afgeleid uit `salePriceInclAtSale`; de excl.-basis voor marge en rapportages. */
-  salePriceExclAtSale: number;
-  /** `quantity * salePriceExclAtSale`, dus het afgeleide excl.-regeltotaal. */
-  lineTotalExclVat: number;
-  /** `quantity * salePriceInclAtSale`: het bedrag dat werkelijk betaald is. */
-  lineTotalInclVat: number;
   /** De voorraadstand NA deze verkoop, zodat de balie die meteen ziet. */
   newStockQuantity: number;
   /** ISO-string. */
@@ -127,7 +160,7 @@ export interface SaleResultDTO {
 }
 
 /** Eén regel voor het overzicht "laatste verkopen". */
-export interface RecentSaleDTO {
+export interface RecentSaleDTO extends SalePricingFieldsDTO {
   id: string;
   partId: string;
   partName: string;
@@ -136,14 +169,45 @@ export interface RecentSaleDTO {
   quantity: number;
   channel: SaleChannel;
   reference: string | null;
-  /** Per stuk, INCL. btw, historisch vastgelegd. */
-  salePriceInclAtSale: number;
-  vatRateAtSale: number;
-  /** Afgeleid uit `salePriceInclAtSale`. */
-  salePriceExclAtSale: number;
-  lineTotalExclVat: number;
-  lineTotalInclVat: number;
   soldAt: string;
+}
+
+/**
+ * `describeSalePricing()` → de DTO-velden hierboven. Puur een naamsverandering van
+ * dezelfde getallen (`paid...` heet in de database `...AtSale`), op één plek zodat de
+ * twee lijsten niet uit elkaar kunnen lopen.
+ */
+function toPricingFields(
+  listPriceIncl: number,
+  paidPriceIncl: number,
+  vatRate: number,
+  quantity: number,
+  discountReason: string | null,
+): SalePricingFieldsDTO {
+  const pricing = describeSalePricing(
+    listPriceIncl,
+    paidPriceIncl,
+    vatRate,
+    quantity,
+  );
+
+  return {
+    salePriceInclAtSale: pricing.paidPriceIncl,
+    vatRateAtSale: pricing.vatRate,
+    salePriceExclAtSale: pricing.paidPriceExcl,
+    listPriceInclAtSale: pricing.listPriceIncl,
+    listPriceExclAtSale: pricing.listPriceExcl,
+    discountPerUnitIncl: pricing.discountPerUnitIncl,
+    discountPct: pricing.discountPct,
+    hasDiscount: pricing.hasDiscount,
+    discountTotalIncl: pricing.discountTotalIncl,
+    discountTotalExcl: pricing.discountTotalExcl,
+    lineTotalListInclVat: pricing.lineTotalListIncl,
+    lineTotalListExclVat: pricing.lineTotalListExcl,
+    lineTotalInclVat: pricing.lineTotalPaidIncl,
+    lineTotalExclVat: pricing.lineTotalPaidExcl,
+    discountReason,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -250,7 +314,8 @@ export async function registerSale(input: SaleInput): Promise<RegisterSaleResult
     );
   }
 
-  const { partId, quantity, channel, reference } = parsed.data;
+  const { partId, quantity, channel, reference, unitPriceIncl, discountReason } =
+    parsed.data;
 
   return prisma.$transaction(async (tx) => {
     // Stap 1 — opnieuw lezen binnen de transactie. De UI kan een verouderde
@@ -311,15 +376,42 @@ export async function registerSale(input: SaleInput): Promise<RegisterSaleResult
     // blijft als de prijzen later wijzigen. De verkoopprijs gaat INCL. btw mee (het
     // bedrag dat de klant betaalde), de inkoopprijs EXCL. — precies zoals ze op het
     // onderdeel staan, dus zonder tussentijdse omrekening die centen kan kosten.
+    //
+    // Sinds T26 worden er TWEE verkoopprijzen vastgelegd:
+    //
+    //  - `listPriceInclAtSale`: de normale prijs, gelezen uit het onderdeel BINNEN
+    //    deze transactie. Niet uit het formulier, want dan zou een geknutselde POST
+    //    een willekeurige "normale prijs" kunnen verzinnen en daarmee de gegeven
+    //    korting in de rapportages kunnen vervalsen;
+    //  - `salePriceInclAtSale`: de prijs die de balie heeft ingevuld, dus wat de klant
+    //    werkelijk betaalt. Is er geen prijs meegestuurd (`null` — geen JavaScript,
+    //    of een oudere POST), dan wordt de normale prijs geboekt. Dat is de veilige
+    //    kant: geen korting in plaats van een verzonnen korting.
+    //
+    // Er wordt hier BEWUST niet geweigerd als de prijs boven de normale prijs of
+    // onder de inkoopprijs ligt: dat zijn uitzonderingen die de balie bewust kan
+    // willen boeken (T26 vraagt om een waarschuwing, geen blokkade). Negatief kan
+    // niet: het Zod-schema weigert dat, en de CHECK-constraint op `Sale` erachter ook.
+    const listPriceIncl = toNumber(part.salePriceIncl);
+    const paidPriceIncl = unitPriceIncl ?? listPriceIncl;
+    // Een reden zonder korting is betekenisloos en wordt weggegooid in plaats van
+    // afgekeurd: de baliemedewerker kan de prijs na het typen van een reden nog
+    // terugzetten op normaal, en dan is een blokkerende foutmelding onnodig
+    // hinderlijk (zelfde afweging als bij `reference` hierboven).
+    const storedDiscountReason =
+      paidPriceIncl < listPriceIncl ? discountReason : null;
+
     const sale = await tx.sale.create({
       data: {
         partId: part.id,
         quantity,
-        salePriceInclAtSale: part.salePriceIncl,
+        salePriceInclAtSale: new Prisma.Decimal(paidPriceIncl.toFixed(2)),
+        listPriceInclAtSale: part.salePriceIncl,
         purchasePriceExclAtSale: part.purchasePriceExcl,
         vatRateAtSale: part.vatRate,
         channel,
         reference,
+        discountReason: storedDiscountReason,
       },
       select: { id: true, soldAt: true },
     });
@@ -393,14 +485,8 @@ export async function registerSale(input: SaleInput): Promise<RegisterSaleResult
       select: { id: true },
     });
 
-    const salePriceIncl = toNumber(part.salePriceIncl);
-    const vatRate = toNumber(part.vatRate);
-    const salePriceExcl = priceExclVat(salePriceIncl, vatRate);
     // Het incl.-totaal is een exacte vermenigvuldiging van het betaalde bedrag; het
     // excl.-totaal is afgeleid en dus een stuurgetal (SPEC §3 regel 0).
-    const lineTotalExclVat = calcLineTotal(salePriceExcl, quantity);
-    const lineTotalInclVat = calcLineTotal(salePriceIncl, quantity);
-
     return {
       sale: {
         saleId: sale.id,
@@ -411,11 +497,13 @@ export async function registerSale(input: SaleInput): Promise<RegisterSaleResult
         quantity,
         channel: channel as SaleChannel,
         reference,
-        salePriceInclAtSale: salePriceIncl,
-        vatRateAtSale: vatRate,
-        salePriceExclAtSale: salePriceExcl,
-        lineTotalExclVat,
-        lineTotalInclVat,
+        ...toPricingFields(
+          listPriceIncl,
+          paidPriceIncl,
+          toNumber(part.vatRate),
+          quantity,
+          storedDiscountReason,
+        ),
         newStockQuantity: quantityAfter,
         soldAt: sale.soldAt.toISOString(),
       },
@@ -451,6 +539,8 @@ export async function listRecentSales(
       partId: true,
       quantity: true,
       salePriceInclAtSale: true,
+      listPriceInclAtSale: true,
+      discountReason: true,
       vatRateAtSale: true,
       channel: true,
       reference: true,
@@ -461,26 +551,24 @@ export async function listRecentSales(
     },
   });
 
-  return rows.map((row) => {
-    const salePriceInclAtSale = toNumber(row.salePriceInclAtSale);
-    const vatRateAtSale = toNumber(row.vatRateAtSale);
-    const salePriceExclAtSale = priceExclVat(salePriceInclAtSale, vatRateAtSale);
-
-    return {
-      id: row.id,
-      partId: row.partId,
-      partName: row.part.name,
-      brandName: row.part.brand?.name ?? null,
-      sku: row.part.sku,
-      quantity: row.quantity,
-      channel: row.channel as SaleChannel,
-      reference: row.reference,
-      salePriceInclAtSale,
-      vatRateAtSale,
-      salePriceExclAtSale,
-      lineTotalExclVat: calcLineTotal(salePriceExclAtSale, row.quantity),
-      lineTotalInclVat: calcLineTotal(salePriceInclAtSale, row.quantity),
-      soldAt: row.soldAt.toISOString(),
-    };
-  });
+  return rows.map((row) => ({
+    id: row.id,
+    partId: row.partId,
+    partName: row.part.name,
+    brandName: row.part.brand?.name ?? null,
+    sku: row.part.sku,
+    quantity: row.quantity,
+    channel: row.channel as SaleChannel,
+    reference: row.reference,
+    // De korting wordt afgeleid uit de twee HISTORISCHE prijzen, nooit uit de
+    // huidige prijs van het onderdeel (SPEC §3 regel 3).
+    ...toPricingFields(
+      toNumber(row.listPriceInclAtSale),
+      toNumber(row.salePriceInclAtSale),
+      toNumber(row.vatRateAtSale),
+      row.quantity,
+      row.discountReason,
+    ),
+    soldAt: row.soldAt.toISOString(),
+  }));
 }

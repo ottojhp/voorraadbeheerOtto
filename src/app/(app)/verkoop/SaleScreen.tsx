@@ -30,6 +30,7 @@ import type { FormEvent } from "react";
 import {
   useActionState,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useTransition,
@@ -39,10 +40,20 @@ import { BarcodeScanner } from "@/components/BarcodeScanner";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
 import { ErrorMessage } from "@/components/ErrorMessage";
-import { PriceWithVat } from "@/components/PriceWithVat";
+import { MarginBasisNote, PriceWithVat } from "@/components/PriceWithVat";
 import { SALE_CHANNEL_LABELS, type SaleChannel } from "@/lib/labels";
 import type { PartSaleOptionDTO } from "@/lib/queries/types";
-import { calcLineTotal, formatEuro } from "@/lib/money";
+import {
+  applyDiscountAmount,
+  applyDiscountPct,
+  calcMargin,
+  calcMarginPct,
+  describeSalePricing,
+  formatEuro,
+  formatPercent,
+  readMoneyInput,
+  toMoneyInput,
+} from "@/lib/money";
 
 import { QuantityStepper } from "./QuantityStepper";
 import { registerSaleAction, type SaleFormState } from "./actions";
@@ -71,6 +82,22 @@ export interface SaleScreenProps {
 
 const CHANNELS: SaleChannel[] = ["COUNTER", "WORKSHOP"];
 
+/** De kortingspercentages van de snelknoppen (T26). */
+const DISCOUNT_PRESETS = [5, 10, 15] as const;
+
+/**
+ * Maximale lengte van het veld "reden korting", gelijk aan
+ * `MAX_DISCOUNT_REASON_LENGTH` in `@/lib/validation/sales`.
+ *
+ * Hier als eigen constante en niet via een import, net als de 120 bij de
+ * werkorderreferentie hieronder: `@/lib/validation/sales` trekt zod in de bundel van
+ * dit baliescherm, en dat is zo'n 13 kB die een telefoon aan de balie over een
+ * mobiele verbinding moet binnenhalen voor één getal. De autoritatieve grens is en
+ * blijft het Zod-schema op de server; dit is alleen het `maxLength`-hulpje in de
+ * browser.
+ */
+const DISCOUNT_REASON_MAX_LENGTH = 200;
+
 export function SaleScreen({
   query,
   results,
@@ -92,6 +119,32 @@ export function SaleScreen({
   const [channel, setChannel] = useState<SaleChannel>("COUNTER");
   const [reference, setReference] = useState("");
 
+  // --- Prijs en korting (T26) ---------------------------------------------
+  //
+  // `priceRaw` is de ENIGE bron van waarheid voor de prijs: het is de waarde van het
+  // zichtbare veld `unitPriceIncl` en dus exact wat er verstuurd wordt. De
+  // kortingsknoppen en het kortingsbedrag SCHRIJVEN alleen in deze state; er gaat
+  // geen percentage en geen kortingsbedrag mee naar de server, en er is dus ook geen
+  // tweede waarde die met de getoonde prijs uit de pas kan lopen.
+  //
+  // Dat is de les uit `PartForm`: daar stond de keuze in een gecontroleerde
+  // radiogroep, en na een serverfout rendert de server het formulier opnieuw zonder
+  // iets van de keuze in de browser te weten. React zag de `checked`-prop niet
+  // veranderen, werkte de DOM niet bij, en het formulier verstuurde iets anders dan
+  // het scherm toonde — een stille fout van 21%. Hier kan dat niet: de knoppen zijn
+  // `type="button"`, veranderen niets aan het formulier zelf, en zetten alleen de
+  // waarde van het veld dat de gebruiker ook gewoon kan overtypen.
+  //
+  // Zonder JavaScript doen de knoppen niets en gaat de vooringevulde normale prijs
+  // mee. Dat is de veilige kant: geen korting.
+  const [priceRaw, setPriceRaw] = useState(() =>
+    selectedPart ? toMoneyInput(selectedPart.salePriceIncl) : "",
+  );
+  // Het vaste kortingsbedrag staat BEWUST alleen in de browser en gaat niet mee met
+  // het formulier: het is een rekenhulpje dat het prijsveld vult.
+  const [discountAmountRaw, setDiscountAmountRaw] = useState("");
+  const [discountReason, setDiscountReason] = useState("");
+
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const submittingRef = useRef(false);
   /** Laatste verkoop waarvoor het scherm al opgeruimd is (voorkomt een lus). */
@@ -110,6 +163,15 @@ export function SaleScreen({
     setQuantity(1);
     setChannel("COUNTER");
     setReference("");
+    // De prijs begint altijd op de NORMALE prijs van het gekozen onderdeel (T26):
+    // het veld is vooringevuld, korting is een bewuste handeling.
+    setPriceRaw(selectedPart ? toMoneyInput(selectedPart.salePriceIncl) : "");
+    setDiscountAmountRaw("");
+    setDiscountReason("");
+    // `selectedPart` zelf is geen afhankelijkheid: bij elke render van de
+    // serverpagina is dat een nieuw object, en dan zou deze effect de prijs
+    // terugzetten terwijl de baliemedewerker aan het typen is. Het id is wat telt.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
 
   // Laag 2 van de dubbelklikbescherming vrijgeven zodra de action klaar is.
@@ -140,6 +202,9 @@ export function SaleScreen({
     setQuantity(1);
     setChannel("COUNTER");
     setReference("");
+    setPriceRaw("");
+    setDiscountAmountRaw("");
+    setDiscountReason("");
     router.replace("/verkoop");
     searchInputRef.current?.focus();
   }, [successSaleId, router]);
@@ -158,8 +223,88 @@ export function SaleScreen({
   const stock = selectedPart?.stockQuantity ?? 0;
   const outOfStock = selectedPart !== null && stock < 1;
   const tooMany = selectedPart !== null && quantity > stock;
+
+  // --- Live doorrekening van de prijs (T26) --------------------------------
+  //
+  // Met dezelfde `describeSalePricing()` als de datalaag, zodat het bedrag dat hier
+  // op het scherm staat per constructie gelijk is aan het bedrag dat straks in de
+  // bevestiging en in de database staat.
+  const listPriceIncl = selectedPart?.salePriceIncl ?? 0;
+  const vatRate = selectedPart?.vatRate ?? 0;
+
+  const priceInput = useMemo(
+    () => readMoneyInput(priceRaw, "De prijs"),
+    [priceRaw],
+  );
+  const priceError = priceInput.ok ? null : priceInput.error;
+  const enteredPrice = priceInput.ok ? priceInput.value : listPriceIncl;
+
+  const pricing = useMemo(
+    () =>
+      describeSalePricing(listPriceIncl, enteredPrice, vatRate, quantity),
+    [listPriceIncl, enteredPrice, vatRate, quantity],
+  );
+
+  // Marge ALTIJD excl. btw tegen excl. btw (SPEC §3 regel 0): de ingevulde prijs is
+  // incl. btw en wordt daarom eerst teruggerekend. Rechtstreeks met de inkoopprijs
+  // vergelijken zou de marge ~21% te hoog laten zien.
+  const purchasePriceExcl = selectedPart?.purchasePriceExcl ?? 0;
+  const marginPerUnit = calcMargin(purchasePriceExcl, pricing.paidPriceExcl);
+  const marginPct = calcMarginPct(purchasePriceExcl, pricing.paidPriceExcl);
+  const belowPurchasePrice =
+    selectedPart !== null && priceInput.ok && marginPerUnit < 0;
+
+  const discountAmountInput =
+    discountAmountRaw.trim() === ""
+      ? null
+      : readMoneyInput(discountAmountRaw, "Het kortingsbedrag");
+  const discountAmountError =
+    discountAmountInput && !discountAmountInput.ok
+      ? discountAmountInput.error
+      : null;
+
+  /** Zet de prijs vanuit een snelknop of het kortingsbedrag. */
+  const setPriceTo = (value: number) => {
+    setPriceRaw(toMoneyInput(value));
+  };
+
+  const handleDiscountPreset = (pct: number) => {
+    setPriceTo(applyDiscountPct(listPriceIncl, pct));
+    // Het kortingsbedragveld leegmaken: anders zou daar een bedrag blijven staan dat
+    // niet meer bij de prijs hoort, en dat is precies het soort stille afwijking dat
+    // dit scherm moet voorkomen.
+    setDiscountAmountRaw("");
+  };
+
+  const handleDiscountAmountChange = (raw: string) => {
+    setDiscountAmountRaw(raw);
+    if (raw.trim() === "") {
+      // Bedrag gewist = terug naar de normale prijs.
+      setPriceTo(listPriceIncl);
+      return;
+    }
+    const parsed = readMoneyInput(raw, "Het kortingsbedrag");
+    if (parsed.ok) {
+      setPriceTo(applyDiscountAmount(listPriceIncl, parsed.value));
+    }
+    // Bij onzin in het bedragveld blijft de prijs staan; de melding eronder vertelt
+    // wat er mis is. De prijs stilletjes op 0 zetten zou veel erger zijn.
+  };
+
+  const handlePriceChange = (raw: string) => {
+    setPriceRaw(raw);
+    // De gebruiker overschrijft de prijs met de hand; het kortingsbedrag hoort daar
+    // dan niet meer bij.
+    setDiscountAmountRaw("");
+  };
+
   const confirmDisabled =
-    pending || isNavigating || selectedPart === null || outOfStock || tooMany;
+    pending ||
+    isNavigating ||
+    selectedPart === null ||
+    outOfStock ||
+    tooMany ||
+    !priceInput.ok;
 
   const showConfirmation =
     state.status === "success" && state.result && selectedPart === null;
@@ -187,6 +332,11 @@ export function SaleScreen({
           {/* Het betaalde bedrag (incl. btw) is het hoofdbedrag (T18). */}
           <p className="mt-1 text-sm text-green-800">
             Afgerekend:{" "}
+            {state.result.hasDiscount && (
+              <s className="whitespace-nowrap text-xs">
+                {formatEuro(state.result.lineTotalListInclVat)}
+              </s>
+            )}{" "}
             <span className="font-semibold">
               {formatEuro(state.result.lineTotalInclVat)} incl. btw
             </span>{" "}
@@ -194,6 +344,21 @@ export function SaleScreen({
               ({formatEuro(state.result.lineTotalExclVat)} excl. btw)
             </span>
           </p>
+          {/* Gegeven korting expliciet in de bevestiging (T26). */}
+          {state.result.hasDiscount && (
+            <p className="mt-1 text-sm text-green-800">
+              Korting:{" "}
+              <span className="font-semibold">
+                {formatEuro(state.result.discountTotalIncl)} incl. btw
+              </span>{" "}
+              <span className="whitespace-nowrap text-xs">
+                ({formatPercent(state.result.discountPct)})
+              </span>
+              {state.result.discountReason
+                ? ` — ${state.result.discountReason}`
+                : ""}
+            </p>
+          )}
           {state.result.reference && (
             <p className="mt-1 text-sm text-green-800">
               Werkorder: {state.result.reference}
@@ -362,7 +527,7 @@ export function SaleScreen({
                 </dd>
               </div>
               <div>
-                <dt className="text-gray-500">Verkoopprijs per stuk</dt>
+                <dt className="text-gray-500">Normale prijs per stuk</dt>
                 <dd>
                   <PriceWithVat
                     incl={selectedPart.salePriceIncl}
@@ -372,6 +537,230 @@ export function SaleScreen({
                 </dd>
               </div>
             </dl>
+          </Card>
+
+          {/* Prijs en korting (T26). Het prijsveld is leidend: de snelknoppen en het
+              kortingsbedrag vullen alleen dit veld, en alleen dit veld gaat mee met
+              het formulier. */}
+          <Card title="Prijs per stuk">
+            <div className="flex flex-col gap-1">
+              <label
+                htmlFor="sale-unit-price"
+                className="text-sm font-medium text-gray-700"
+              >
+                Prijs per stuk incl. btw
+              </label>
+              <input
+                id="sale-unit-price"
+                name="unitPriceIncl"
+                type="text"
+                inputMode="decimal"
+                autoComplete="off"
+                value={priceRaw}
+                onChange={(event) => handlePriceChange(event.target.value)}
+                aria-invalid={priceError ? true : undefined}
+                aria-describedby="sale-unit-price-help"
+                className={`min-h-[48px] rounded-md border px-3 py-2 text-base text-gray-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600 ${
+                  priceError || state.fieldErrors.unitPriceIncl
+                    ? "border-red-500"
+                    : "border-gray-300"
+                }`}
+              />
+              <p id="sale-unit-price-help" className="text-sm text-gray-500">
+                Vooringevuld met de normale prijs. Overtypen mag altijd; de
+                standaardprijs van het onderdeel verandert niet.
+              </p>
+              {priceError && (
+                <p role="alert" className="text-sm text-red-600">
+                  {priceError}
+                </p>
+              )}
+              {!priceError && state.fieldErrors.unitPriceIncl && (
+                <p className="text-sm text-red-600">
+                  {state.fieldErrors.unitPriceIncl}
+                </p>
+              )}
+            </div>
+
+            {/* Snelknoppen. `type="button"`: ze mogen het formulier NOOIT
+                verzenden, ze zetten alleen de waarde van het prijsveld hierboven. */}
+            <div
+              role="group"
+              aria-label="Korting toepassen"
+              className="mt-3 grid grid-cols-4 gap-2"
+            >
+              {DISCOUNT_PRESETS.map((pct) => (
+                <button
+                  key={pct}
+                  type="button"
+                  onClick={() => handleDiscountPreset(pct)}
+                  className="flex min-h-[44px] items-center justify-center rounded-md border border-gray-300 bg-white px-2 text-sm font-medium text-gray-900 hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+                >
+                  -{pct}%
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => {
+                  setPriceTo(listPriceIncl);
+                  setDiscountAmountRaw("");
+                }}
+                className="flex min-h-[44px] items-center justify-center rounded-md border border-gray-300 bg-white px-2 text-sm font-medium text-gray-900 hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+              >
+                Normaal
+              </button>
+            </div>
+
+            <div className="mt-3 flex flex-col gap-1">
+              <label
+                htmlFor="sale-discount-amount"
+                className="text-sm font-medium text-gray-700"
+              >
+                Of een vast kortingsbedrag (&euro;, incl. btw)
+              </label>
+              <input
+                id="sale-discount-amount"
+                type="text"
+                inputMode="decimal"
+                autoComplete="off"
+                placeholder="bv. 5,00"
+                value={discountAmountRaw}
+                onChange={(event) =>
+                  handleDiscountAmountChange(event.target.value)
+                }
+                aria-describedby="sale-discount-amount-help"
+                className={`min-h-[48px] rounded-md border px-3 py-2 text-base text-gray-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600 ${
+                  discountAmountError ? "border-red-500" : "border-gray-300"
+                }`}
+              />
+              <p
+                id="sale-discount-amount-help"
+                className="text-sm text-gray-500"
+              >
+                Vult het prijsveld hierboven. Dit bedrag zelf wordt niet
+                opgeslagen.
+              </p>
+              {discountAmountError && (
+                <p role="alert" className="text-sm text-red-600">
+                  {discountAmountError}
+                </p>
+              )}
+            </div>
+
+            {/* Live doorrekening: originele prijs, korting in euro's en procenten,
+                de nieuwe prijs incl. en excl. btw, en de marge die overblijft. */}
+            <dl
+              aria-live="polite"
+              className="mt-4 flex flex-col gap-2 rounded-md border border-gray-200 bg-gray-50 p-3 text-sm"
+            >
+              <div className="flex items-baseline justify-between gap-2">
+                <dt className="text-gray-600">Normale prijs</dt>
+                <dd className="whitespace-nowrap text-gray-900">
+                  {formatEuro(pricing.listPriceIncl)} incl. btw
+                </dd>
+              </div>
+              <div className="flex items-baseline justify-between gap-2">
+                <dt className="text-gray-600">Korting</dt>
+                <dd
+                  className={`whitespace-nowrap font-medium ${
+                    pricing.hasDiscount ? "text-amber-800" : "text-gray-900"
+                  }`}
+                >
+                  {formatEuro(pricing.discountPerUnitIncl)} (
+                  {formatPercent(pricing.discountPct)})
+                </dd>
+              </div>
+              <div className="flex items-start justify-between gap-2">
+                <dt className="text-gray-600">Nieuwe prijs</dt>
+                <dd>
+                  <PriceWithVat
+                    incl={pricing.paidPriceIncl}
+                    excl={pricing.paidPriceExcl}
+                    size="md"
+                    align="right"
+                  />
+                </dd>
+              </div>
+              <div className="flex items-baseline justify-between gap-2">
+                <dt className="text-gray-600">Marge per stuk</dt>
+                <dd
+                  className={`whitespace-nowrap font-medium ${
+                    marginPerUnit < 0 ? "text-red-700" : "text-gray-900"
+                  }`}
+                >
+                  {formatEuro(marginPerUnit)} ({formatPercent(marginPct)})
+                </dd>
+              </div>
+              <MarginBasisNote />
+            </dl>
+
+            {/* Waarschuwing, GEEN blokkade (T26): de balie mag onder de inkoopprijs
+                verkopen, maar moet het wel weten. */}
+            {belowPurchasePrice && (
+              <p
+                role="alert"
+                className="mt-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+              >
+                <strong>Let op:</strong> deze prijs ligt onder de inkoopprijs van{" "}
+                {formatEuro(purchasePriceExcl)} excl. btw. De verkoop kan gewoon
+                geregistreerd worden, maar de marge is negatief (
+                {formatEuro(marginPerUnit)} per stuk).
+              </p>
+            )}
+
+            {pricing.isSurcharge && priceInput.ok && (
+              <p
+                role="alert"
+                className="mt-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+              >
+                <strong>Let op:</strong> deze prijs is{" "}
+                {formatEuro(-pricing.discountPerUnitIncl)} H&Oacute;GER dan de
+                normale prijs van {formatEuro(pricing.listPriceIncl)} incl. btw.
+                Klopt dat?
+              </p>
+            )}
+
+            {pricing.hasDiscount && (
+              <div className="mt-3 flex flex-col gap-1">
+                <label
+                  htmlFor="sale-discount-reason"
+                  className="text-sm font-medium text-gray-700"
+                >
+                  Reden korting (optioneel)
+                </label>
+                <input
+                  id="sale-discount-reason"
+                  name="discountReason"
+                  type="text"
+                  autoComplete="off"
+                  maxLength={DISCOUNT_REASON_MAX_LENGTH}
+                  value={discountReason}
+                  onChange={(event) => setDiscountReason(event.target.value)}
+                  placeholder="bv. beschadigde doos"
+                  aria-describedby="sale-discount-reason-avg"
+                  className={`min-h-[48px] rounded-md border px-3 py-2 text-base text-gray-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-600 ${
+                    state.fieldErrors.discountReason
+                      ? "border-red-500"
+                      : "border-gray-300"
+                  }`}
+                />
+                {/* AVG-waarschuwing, zichtbaar bij het veld — net als bij de
+                    werkorderreferentie. */}
+                <p
+                  id="sale-discount-reason-avg"
+                  className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+                >
+                  Beschrijf alleen de reden. <strong>Geen</strong> klantnaam en{" "}
+                  <strong>geen</strong> kenteken — dat zijn persoonsgegevens
+                  (AVG).
+                </p>
+                {state.fieldErrors.discountReason && (
+                  <p className="text-sm text-red-600">
+                    {state.fieldErrors.discountReason}
+                  </p>
+                )}
+              </div>
+            )}
           </Card>
 
           <Card>
@@ -459,15 +848,28 @@ export function SaleScreen({
             </div>
 
             {/* Het totaal dat de klant betaalt staat voorop (T18); het
-                excl.-stuurgetal eronder. */}
-            <div className="mt-3 flex items-baseline justify-between gap-2">
+                excl.-stuurgetal eronder. Bij korting staat het normale totaal
+                doorgestreept ernaast, zodat de balie ziet wat er weggegeven is. */}
+            <div className="mt-3 flex items-start justify-between gap-2">
               <span className="text-sm text-gray-700">Totaal</span>
-              <PriceWithVat
-                incl={calcLineTotal(selectedPart.salePriceIncl, quantity)}
-                excl={calcLineTotal(selectedPart.salePriceExcl, quantity)}
-                size="md"
-                align="right"
-              />
+              <span className="text-right">
+                {pricing.hasDiscount && (
+                  <span className="block text-xs text-gray-500">
+                    <s className="whitespace-nowrap">
+                      {formatEuro(pricing.lineTotalListIncl)}
+                    </s>{" "}
+                    <span className="whitespace-nowrap">
+                      &minus;{formatEuro(pricing.discountTotalIncl)} korting
+                    </span>
+                  </span>
+                )}
+                <PriceWithVat
+                  incl={pricing.lineTotalPaidIncl}
+                  excl={pricing.lineTotalPaidExcl}
+                  size="md"
+                  align="right"
+                />
+              </span>
             </div>
 
             {outOfStock && (

@@ -6,6 +6,324 @@ in `docs/TASKS.md`.
 
 Nieuwste notitie bovenaan.
 
+## [T26] Korting bij verkoop — 2026-10-01
+**Status:** klaar voor review
+
+**Aangemaakte bestanden:** prisma/migrations/20261001000000_korting/migration.sql
+**Gewijzigde bestanden:** prisma/schema.prisma, prisma/seed.ts, src/lib/money.ts,
+src/lib/validation/sales.ts, src/lib/queries/sales.ts, src/lib/queries/reports.ts,
+src/lib/queries/parts.ts, src/lib/queries/types.ts,
+src/app/(app)/verkoop/SaleScreen.tsx, src/app/(app)/verkoop/actions.ts,
+src/app/(app)/verkoop/page.tsx, src/app/(app)/verkoop/RecentSalesCard.tsx,
+src/app/(app)/page.tsx, src/app/(app)/rapportages/page.tsx,
+src/lib/__tests__/money.test.ts, src/lib/__tests__/sales.test.ts,
+src/lib/__tests__/reports.test.ts, src/lib/__tests__/parts.test.ts,
+docs/TASKS.md (alleen status), docs/PROGRESS.md
+**Geen nieuwe dependencies.**
+
+**Wat is gebouwd:**
+
+*Datamodel.* `Sale` heeft er twee velden bij: `listPriceInclAtSale` (de NORMALE prijs
+incl. btw op het moment van verkoop) en `discountReason`. De betekenis van het bestaande
+`salePriceInclAtSale` is verscherpt: dat is vanaf nu de WERKELIJK BETAALDE prijs. De
+korting is daarmee het verschil tussen twee historisch vastgelegde bedragen
+(SPEC §3 regel 3) en wordt nergens opgeslagen als afgeleide waarde.
+
+*De migratie* (`20261001000000_korting`) is met de hand geschreven. Kolom erbij als
+NULLABLE, vullen met `listPriceInclAtSale = salePriceInclAtSale`, dán op NOT NULL zetten.
+Die volgorde is nodig: NOT NULL zonder default ketst af op een gevulde tabel, en een
+default zou een verzonnen prijs achterlaten. Bestaande verkopen hadden geen korting — er
+was geen manier om een andere prijs te registreren — dus hun korting is per definitie 0
+en geen enkel bedrag verandert. Er zijn twee CHECK-constraints bij gekomen (beide prijzen
+>= 0). Er is BEWUST géén constraint `betaald <= normaal`: een prijs boven de normale prijs
+hoort een waarschuwing te geven, geen databasefout.
+
+*De kortingsknoppen zonder het radiogroep-probleem.* Het prijsveld `unitPriceIncl` is het
+ENIGE dat met het formulier meegaat. De knoppen -5/-10/-15%/Normaal en het veld voor een
+vast kortingsbedrag zijn `type="button"` respectievelijk een veld dat niet verstuurd
+wordt; ze SCHRIJVEN alleen in de React-state die het prijsveld vult. Er is dus geen tweede
+waarde die na een herrender uit de pas kan lopen met wat het scherm toont — precies het
+probleem dat `PartForm` met een verborgen veld oploste. Overtypen met de hand werkt
+gewoon; dat wist meteen het kortingsbedragveld, zodat daar nooit een bedrag blijft staan
+dat niet meer bij de prijs hoort. Zonder JavaScript gaat de vooringevulde normale prijs
+mee: geen korting, de veilige kant. De server leest de normale prijs ALTIJD uit het
+onderdeel binnen de transactie, nooit uit het formulier — anders zou een geknutselde POST
+de gegeven korting in de rapportages kunnen vervalsen.
+
+*Afronden en consistentie.* `applyDiscountPct()` rondt de nieuwe prijs af op centen (10%
+van € 30,19 is € 27,17, niet € 27,171), en het getoonde kortingsbedrag én percentage
+worden daarna uit dát afgeronde bedrag afgeleid. Zo kan het percentage niet uit de pas
+lopen met het bedrag. `describeSalePricing()` in de geldlaag rekent een hele regel door en
+wordt gebruikt door het verkoopscherm (live) én door de datalaag (DTO's), zodat het bedrag
+op het scherm en het bedrag in de bevestiging per constructie gelijk zijn. `readMoneyInput()`
+staat om dezelfde reden in de geldlaag: het Zod-schema op de server gebruikt dezelfde
+functie als het scherm, dus scherm en server geven nooit een ander oordeel of een andere
+melding.
+
+*Waarschuwen, niet blokkeren.* Onder de inkoopprijs: oranje melding met de inkoopprijs en
+de negatieve marge erbij, bevestigknop blijft gewoon werken. Boven de normale prijs: idem.
+Negatief: geweigerd, in de browser en in Zod en in de database. € 0,00 mag (weggeven).
+
+*Rapportages.* Nieuwe kaart "Totaal gegeven korting": incl. btw als hoofdbedrag met excl.
+eronder, net als de omzet. Het excl.-bedrag rekent ELKE prijs apart terug en trekt dán af,
+met hetzelfde `ROUND` als de omzet — anders telt de korting excl. niet op tot het verschil
+tussen de omzet met en zonder korting. Dat is nagerekend: zie test 4 hieronder, waar
+€ 11.751,31 − € 11.737,29 = € 14,02 precies het kortingstotaal excl. is.
+
+*Zichtbaar dat er korting is gegeven* in de bevestiging na een verkoop, in "Laatste
+verkopen" op het verkoopscherm en in "Laatste verkopen" op het dashboard: de originele
+prijs doorgestreept boven het betaalde bedrag, met het kortingsbedrag en de reden eronder.
+
+**De vier echte testen (lokale database op poort 5433, 40 onderdelen, 86 seed-verkopen):**
+
+1. **Verkoop met korting.** Spiegel links (ACC-BTC-028), normale prijs € 16,95 incl.,
+   inkoop € 6,75 excl., 21% btw. 2 stuks à € 15,26. In de database:
+   `salePriceInclAtSale = 15.26`, `listPriceInclAtSale = 16.95`,
+   `discountReason = "beschadigde doos"`. Voorraad 41 → 39, één grootboekregel erbij
+   (`delta -2`, `quantityBefore 41`, `quantityAfter 39`, reden `SALE`), 3 → 4 regels voor
+   dit onderdeel. De standaardprijs van het onderdeel is € 16,95 gebleven.
+2. **Verkoop onder de inkoopprijs.** Hetzelfde onderdeel, 1 stuk à € 3,38 incl. = € 2,79
+   excl. tegen een inkoopprijs van € 6,75 excl.: marge **− € 3,96** per stuk. De verkoop is
+   gewoon vastgelegd en de voorraad ging 39 → 38. In de browser verschijnt bij zo'n prijs
+   de oranje melding ("deze prijs ligt onder de inkoopprijs van € 98,00 excl. btw … de
+   marge is negatief (€ -15,36 per stuk)") terwijl de bevestigknop actief blijft.
+3. **"Totaal gegeven korting" versus directe SQL.** Over heel 2026: rapportage € 16,95
+   incl. / € 14,02 excl.; de directe SQL-som
+   `SUM(quantity * (listPriceInclAtSale - salePriceInclAtSale))` over dezelfde periode
+   geeft € 16,95 / € 14,02 — gelijk. Per kanaal: balie € 16,95, werkplaats € 0,00. Na de
+   browsertest (nog twee verkopen met korting) staat de kaart op de rapportagepagina op
+   € 125,95 incl. / € 104,11 excl. over de laatste 30 dagen.
+4. **Rekenen met de BETAALDE prijs.** Omzet excl. volgens de rapportage € 11.737,29;
+   directe SQL met de betaalde prijs € 11.737,29; met de normale prijs zou het
+   € 11.751,31 zijn. Het verschil, € 14,02, is exact het kortingstotaal excl. Marge
+   € 5.283,49 in beide; omzet incl. € 14.202,00 in beide. Bestsellers: voor het onderdeel
+   met korting geeft de rapportage € 84,05 omzet, de SQL met betaalde prijs € 84,05 en met
+   normale prijs € 98,07. Omzet, marge en bestsellers rekenen dus al met de betaalde prijs
+   — dat is niet veranderd, alleen bewezen.
+
+**Het migratiebewijs.** De gevulde database is eerst terug in de PRE-T26-vorm gebracht (de
+twee kolommen en de twee constraints eraf) en daarna is `migration.sql` LETTERLIJK opnieuw
+uitgevoerd. Vingerafdruk (md5 over id + betaalde prijs + inkoopprijs + btw + aantal van
+alle 86 rijen, op id gesorteerd) vóór én na: `edeb19c1231f06acabc4b4d72b2fc2c4`. Omzet
+incl. € 14.168,10 en excl. € 11.709,28 ongewijzigd, 0 rijen met `normaal <> betaald`,
+0 NULL-waarden, kolom `numeric(10,2) NOT NULL`. Hetzelfde was eerder al gemeten op de
+oorspronkelijke database (88 rijen, vingerafdruk `e607340c9a77cf9e28f994aecf27920b` vóór
+en na de echte `migrate deploy`).
+
+**Twee meegenomen kleine fixes:**
+- `rapportages/page.tsx`: de zin bij de exportknop verwees naar `@/lib/csv`. Dat is
+  ontwikkelaarstaal en zegt een winkelier niets; weg. Wat er wél toe doet (puntkomma,
+  decimaalkomma, bedragen excl. btw) staat er nog.
+- `page.tsx`: het lage-voorraadlabel toonde `-3`, wat leest als negatieve voorraad terwijl
+  die in deze applicatie niet kan bestaan (SPEC §3 regel 6). Nu "3 stuks tekort" /
+  "1 stuk tekort", uit één gedeelde `formatShortage()` zodat de tabel en de mobiele kaart
+  niet uit elkaar kunnen lopen. Er staat bewust "stuks" bij: zonder zelfstandig naamwoord
+  valt er niets te verbuigen, en in de mobiele kaart ontbreekt de kolomkop "Tekort".
+
+**Keuzes en afwijkingen:**
+1. **`purchasePriceExcl` is aan `PartSaleOptionDTO` toegevoegd.** Zonder de inkoopprijs
+   kan het verkoopscherm de resterende marge niet tonen en niet waarschuwen. De marge
+   wordt op excl.-basis berekend: de ingevulde prijs gaat eerst door `priceExclVat()`.
+2. **Het veld "reden korting" verschijnt pas zodra er korting is.** Een reden zonder
+   korting is betekenisloos; de server gooit hem dan ook weg in plaats van hem af te
+   keuren, net zoals `reference` bij een baliesverkoop. Met dezelfde AVG-waarschuwing bij
+   het veld als bij de werkorderreferentie.
+3. **De kaartenrij in de rapportages is nu `xl:grid-cols-6`** in plaats van
+   `lg:grid-cols-5`. Met zes kaarten op een 1024px-scherm werd een bedrag van vier cijfers
+   plus het btw-label te smal; op 375px blijven het twee kolommen.
+4. **Geen import van `@/lib/validation/sales` in het verkoopscherm.** Dat trok zod de
+   bundel van het baliescherm in: `/verkoop` ging van 5,4 kB naar 20,3 kB en de First Load
+   JS van 116 kB naar 131 kB, voor één getal (`maxLength`). Nu een eigen constante met een
+   verwijzing in het commentaar, zoals de 120 bij de werkorderreferentie al deed.
+
+**Verificatie:**
+- `npx tsc --noEmit` → 0 fouten
+- `npx vitest run` → 612 tests groen in 22 bestanden (576 bestaand, 36 nieuw); geen
+  bestaande assertie verzwakt. Vier bestaande tests zijn aangevuld met de nieuwe velden
+  (mockrijen en verwachte DTO's), niet versoepeld.
+- `npx eslint .` → schoon (exitcode 0)
+- `npx next build` → slaagt; `/verkoop` 5,37 kB / 116 kB First Load
+- Rendertest met een sessiecookie uit `createSessionValue()`: `/`, `/onderdelen`,
+  `/verkoop`, `/rapportages`, `/voorraadmutaties`, `/leveranciers`, `/merken` → alle 200
+- Browser op 375px: de hele kortingsflow doorlopen. Geen horizontaal scrollen, alle
+  knoppen >= 44px.
+
+**Omgeving — let op:** de scratchpad is tijdens deze taak opgeruimd en nam de
+PostgreSQL-datadirectory mee (`global/pg_filenode.map` en `PG_VERSION` waren weg, de
+server kon geen nieuwe verbindingen meer aannemen). PostgreSQL 16.4 is opnieuw
+gedownload, `initdb` opnieuw gedraaid in `pgdata2`, en daarna `npx prisma migrate deploy`
++ `npm run db:seed`. De lokale database bevat dus verse seed-data plus de verkopen uit de
+testen hierboven. Dit is precies het scenario dat in CLAUDE.md staat beschreven; voor iets
+blijvends hoort hier een externe `DATABASE_URL`.
+
+## [T25] Tekstherkenning betrouwbaar maken — 2026-10-01
+**Status:** klaar voor review
+
+**Aangemaakte bestanden:** src/lib/ocr-consensus.ts, src/lib/__tests__/ocr-consensus.test.ts
+**Gewijzigde bestanden:** src/lib/article-number.ts, src/lib/ocr-engine.ts,
+src/components/TextScanner.tsx, src/app/(app)/onderdelen/scan-state.ts,
+src/app/(app)/onderdelen/scannen/ScanScreen.tsx, src/lib/queries/parts.ts,
+src/lib/queries/types.ts, src/lib/__tests__/article-number.test.ts,
+src/lib/__tests__/ocr-engine.test.ts, src/lib/__tests__/scan-ui.test.ts,
+docs/TASKS.md (alleen status), docs/PROGRESS.md
+**Geen nieuwe dependencies.** De bewerkingsafstand is zelf geschreven (± 60 regels).
+
+**Wat is gebouwd:**
+
+*Benaderend matchen.* `matchScannedText()` heeft een vierde stap gekregen, die alleen
+gezet wordt als stap 1–3 (exact / na normalisatie / komt voor in de regel) NIETS
+opleverden: zoek het bekende nummer op de kleinste Damerau-Levenshtein-afstand. De
+afstandsfunctie is de echte Damerau-Levenshtein (verwisselde tekens kosten één stap, ook
+met iets ertussen — `CA`→`ABC` is 2 en niet 3), met een afkapgrens zodat duidelijk
+verschillende nummers geen matrix kosten. Daarnaast `approximateSubstringDistance()`,
+waarbij de randen van de GELEZEN regel gratis zijn: `Art.nr- PlA-4T.g 455` ligt daarmee
+op afstand 1 van `PIA-4T-8455` en niet op 5.
+
+*Drie remmen tegen valse treffers*, want een verkeerd gematcht onderdeel verandert de
+voorraad van het verkeerde artikel en dat merkt niemand tot de telling:
+1. **lengtegrens** — t/m 2 correcties vanaf 6 tekens, t/m 1 bij kortere, en nooit meer
+   dan de helft van het nummer (`allowedCorrections`);
+2. **onderlinge afstand** — een nummer mag hoogstens `afstand tot het dichtstbijzijnde
+   ANDERE bekende nummer − 1` gecorrigeerd worden. `PIA-4T-8412` en `PIA-4T-8455` staan
+   op afstand 2 van elkaar, dus daar is één correctie toegestaan en kan een scan die van
+   beide 2 tekens afwijkt geen van beide aanwijzen. Hoe meer de voorraad op elkaar lijkt,
+   hoe STRENGER de drempel;
+3. **ondubbelzinnigheid** — alleen de kandidaten op de kleinste afstand komen terug; zijn
+   dat er twee, dan worden ze beide getoond en kiest de gebruiker.
+De tweede rem wordt bewust NA het bepalen van de kleinste afstand gezet, en op álle
+kandidaten op die afstand tegelijk: faalt er één, dan komt er helemaal niets terug. Zou
+hij per kandidaat gezet worden, dan kon een nummer dat te veel op zijn buurman lijkt
+wegvallen terwijl een derde op dezelfde afstand bleef staan — één kandidaat op het scherm
+terwijl er twee even dicht bij lagen.
+
+*Benaderend matchen staat per aanroep aan* (`approximate: true`) en nooit voor een
+barcode: die werkt volgens de eigenaar goed en houdt zijn `exactOnly`-pad. Op de
+echte database: 40 onderdelen, 111 sleutels, 0 sleutels naar meer dan één onderdeel; 3
+sleutels krijgen drempel 0, 42 krijgen 1 en 66 krijgen 2.
+
+*Beeldbewerking* in `drawOcrFrame()`, in deze volgorde: bijsnijden tot het richtkader
+(ongewijzigd), opschalen tot 3× met een bovengrens van 1800 px (was 2× / 1280 px, nu via
+`OCR_UPSCALE`; de standaardwaarden van `computeOcrCrop` zijn níét veranderd), dan
+grijswaarden met de gebruikelijke weging en een contrastoprekking met de uiterste 0,1%
+weggeknipt. Een doorzichtige pixel telt als wit. Opschalen gebeurt vóór het oprekken,
+anders smeert de interpolatie de net opgerekte randen weer uit.
+
+*Tekenset beperkt* tot `A-Z0-9-.` via `tessedit_char_whitelist`.
+
+*Meerdere metingen* (`src/lib/ocr-consensus.ts`): de leeslus geeft pas iets door als een
+artikelnummer in minstens TWEE metingen hetzelfde opleverde (na normalisatie, dus een
+punt voor een streepje telt als gelijk). Na zes rondes zonder overeenstemming wordt de
+vaakst voorkomende kandidaat genomen, met het aantal metingen erbij. Bij gelijke stand
+wint het LANGSTE bevestigde nummer — een verminkte meting herhaalt zich net zo goed als
+een goede.
+
+*Op het scherm:* de ruwe gelezen tekst staat er altijd (ook bij een treffer), met daaronder
+"In 2 van de 3 metingen hetzelfde gelezen" of, in oranje, "controleer het nummer". Bij een
+benaderende treffer staat er "leveranciersnummer PEU-AF-72310 — treffer na correctie van
+1 teken" plus de bestaande waarschuwing. Bevestigen blijft verplicht; er wordt nog steeds
+nooit automatisch iets gewijzigd.
+
+**De meting — en wat die wel en niet bewijst:**
+
+32 **gegenereerde** afbeeldingen van 1280×720 ("camerabeeld"), met echte nummers uit de
+lokale database: recht, klein, verkleind, 7°/10°/15° gedraaid, onscherp, contrastarm, wit
+op donker, met omringende verpakkingstekst, met korrel, en drie negatieve controles (een
+nummer dat NIET bestaat, een verpakking zonder nummer, en korrel zonder nummer). Beide
+paden draaien de hele keten: uitsnede → opschalen → (nieuw: bewerken) → Tesseract 5.1.1
+met `rotateAuto`, meerdere rondes → matchen.
+
+| | juiste treffers | valse treffers | missers | terecht niets |
+|---|---|---|---|---|
+| OUD (T20) | 23 | **0** | 6 | 3 van 3 |
+| NIEUW (T25) | **28** | **0** | 1 | 3 van 3 |
+
+Vijf beelden gingen van mis naar raak. Vier daarvan (`08-gedraaid10`,
+`15-contrastarm-gedraaid`, `17-verpakking-gedraaid`, `24-gedraaid15`) dankzij de
+beeldbewerking en de meerdere metingen: daar leest de nieuwe keten het nummer gewoon goed
+waar de oude `PIA-4T.g45`, `ee J`, `PEU-AF.7531,` en `"sar. 121.04` las. Eén
+(`25-klein-onscherp-gedraaid`) dankzij het benaderend matchen: BEIDE paden lazen daar
+`MOT-B8EN-010`, de oude vond daar niets bij, de nieuwe vindt `MOT-BEN-010` met
+"1 teken gecorrigeerd". De enige overgebleven misser (`31-ruis-contrastarm`) miste de
+oude aanpak ook.
+
+Twee losse metingen bij de criteria:
+- **`rotateAuto`:** met de vlag aan 28 van de 29 beelden-met-nummer juist, met de vlag uit
+  24. Het verschil zit volledig op de gedraaide beelden (`09`, `10`, `15`, `24`). De vlag
+  doet dus écht werk, nu er meerdere rondes zijn.
+- **Tekenset beperken:** op 27 van de 32 beelden gaf Tesseract met en zonder de lijst
+  LETTERLIJK dezelfde tekst, en op de vijf waar de tekst verschilde veranderde de uitkomst
+  van het matchen geen enkele keer. De LSTM-engine negeert hem dus grotendeels. Hij staat
+  aan omdat hij wel rommel (kleine letters, leestekens) uit de omringende tekst weghaalt
+  die anders bij het benaderend matchen binnenkomt — maar hij levert hier geen enkele
+  treffer op.
+
+**Wat dit NIET bewijst — belangrijk voor de eigenaar:** dit zijn gegenereerde
+afbeeldingen, geen foto's van echte verpakkingen. Gedrukte Helvetica op wit, met
+nagebootste draaiing, onscherpte, korrel en laag contrast. Een glimmende folieverpakking
+onder tl-licht, een gekreukt zakje, een dot-matrix-sticker of een gebogen fles blijft een
+ander probleem. De cijfers hierboven zijn een vergelijking van twee aanpakken op dezelfde
+beelden, geen voorspelling van het slagingspercentage in de werkplaats. Er is nog steeds
+niet op een telefoon en niet met een echte camera gemeten.
+
+**Twee dingen die de meting zelf aan het licht bracht** (en die zonder meten in de app
+waren beland):
+1. Contrast oprekken op een beeld dat de schaal al gebruikt, maakt het SLECHTER: op het
+   korrelige beeld met kleine druk las Tesseract zonder bewerking vier keer op rij
+   `MOT-BEN-010` en mét de bewerking vier keer op rij `LE LE -WOE SC C LE LL...`. Er wordt
+   nu alleen opgerekt bij een bereik tussen 24 en 180 (`ALREADY_WIDE_RANGE`).
+2. De knipgrens van 2% knipte de DRUK zelf weg: een artikelnummer beslaat maar een paar
+   procent van de strook. Daardoor werd de achtergrond het donkerste punt en ging de hele
+   bewerking de verkeerde kant op. Nu 0,1%.
+
+**Keuzes en afwijkingen:**
+1. **Standaard UIT.** `matchScannedText()` matcht zonder `approximate: true` precies zoals
+   voor T25. De aanroeper (`findPartsByScannedText`) zet het aan voor `ocr` en `manual` en
+   nooit voor `barcode`. Alle bestaande tests over het strenge gedrag staan er nog,
+   ongewijzigd en groen.
+2. **`distance` is optioneel in het DTO** (`PartScanMatchDTO.distance?: number`), zodat een
+   treffer zonder getal nooit een halve zin op het scherm geeft.
+3. **`computeOcrCrop()` heeft een optioneel derde argument** gekregen in plaats van nieuwe
+   standaardwaarden. De bestaande tests op dat rekenwerk (T20) blijven daardoor meten wat
+   ze maten; het scanscherm vraagt expliciet om de ruimere opschaling.
+4. **De eis van twee metingen kijkt naar het genormaliseerde NUMMER**, niet naar de
+   letterlijke tekst: letterlijk identieke OCR-uitvoer is zeldzaam, en dan zou de eis
+   vrijwel nooit gehaald worden.
+5. Barcode onaangeroerd: voorrang, timing en `exactOnly` zijn niet gewijzigd.
+
+**Verificatie:** `tsc --noEmit` 0 fouten. `eslint .` schoon. `vitest run`: 572 van de 576
+groen; mijn bestanden allemaal groen (article-number 58, ocr-consensus 17, ocr-engine 22,
+scan-ui 9 — 63 tests erbij). De 4 rode zitten in `parts.test.ts`, `sales.test.ts` en
+`reports.test.ts` en horen bij de kortingstaak (T26) die tegelijk in deze werkkopie
+gebouwd wordt (`listPriceInclAtSale` / `purchasePriceExcl` ontbreken in die mocks); niet
+aangeraakt. `next build` (dev-server eerst gestopt) slaagt; **First Load JS van
+`/onderdelen` staat nog op 112 kB**, gelijk aan de vorige build. De beeldbewerking zit in
+de scanbundel: `/onderdelen/scannen` ging van 5,63 → 6,89 kB (119 → 120 kB First Load).
+Rendertest met een sessiecookie uit `createSessionValue()`: `/`, `/onderdelen`,
+`/onderdelen/scannen`, `/verkoop`, `/voorraadmutaties`, `/rapportages` alle zes 200.
+Browser op 375 px: `PEU-AF-72319` (één teken fout) ingetypt → "Eén onderdeel gevonden /
+Luchtfilter / leveranciersnummer PEU-AF-72310 — treffer na correctie van 1 teken", met de
+ingevoerde tekst erboven en de waarschuwing eronder; geen horizontaal scrollen. En de rem
+in werking: `UNI-OIL-037` (één teken van drie olienummers die onderling óók één teken
+schelen) geeft "Geen onderdeel gevonden" in plaats van een gok.
+
+**Openstaand / risico's:**
+- `findPartsByScannedText()` leest nog steeds alle actieve onderdelen in en rekent in
+  Node. Benaderend matchen maakt dat zwaarder: per kandidaat binnen de lengtegrens wordt
+  ook de afstand tot alle andere sleutels berekend. Bij 40 onderdelen (111 sleutels) is dat
+  onmeetbaar; bij enkele duizenden onderdelen is dit de plek die als eerste gaat knellen.
+- De tweede rem is berekend over de ACTIEVE onderdelen. Wordt een onderdeel gearchiveerd,
+  dan kan de drempel van zijn buurman ruimer worden. Dat is verdedigbaar (een gearchiveerd
+  onderdeel kan niet meer gekozen worden) maar het is wel een stille verandering.
+- Eén meting kan zich herhalen en toch fout zijn: twee metingen die allebei hetzelfde
+  verkeerde teken lezen, halen de eis. De bevestiging door de gebruiker blijft dus de
+  laatste en belangrijkste rem, en het scherm zegt dat ook.
+- De negatieve controles zijn met drie beelden mager. Wat wél breed getest is, is de
+  matchlogica: een systematische test verminkt elk teken van elk nummer van elk
+  testonderdeel met vier vervangingen en eist dat er nooit UITSLUITEND een verkeerd
+  onderdeel uitkomt.
+
+---
+
 ## [FIX] Tijdzone bij datumweergave — 2026-10-01
 **Status:** klaar voor review
 **Gewijzigde bestanden:** src/lib/datetime.ts (nieuw), src/lib/__tests__/datetime.test.ts

@@ -1034,7 +1034,9 @@ async function main(): Promise<void> {
         partId,
         quantity: plan.quantity,
         // Verkoopprijs INCL. btw, inkoopprijs EXCL. btw (SPEC §3 regel 0, v2.0).
+        // De seed geeft geen korting: betaalde prijs = normale prijs (T26).
         salePriceInclAtSale: part.salePriceIncl,
+        listPriceInclAtSale: part.salePriceIncl,
         purchasePriceExclAtSale: part.purchasePriceExcl,
         vatRateAtSale: part.vatRate,
         channel: plan.channel,

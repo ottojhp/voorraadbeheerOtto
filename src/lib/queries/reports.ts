@@ -84,6 +84,15 @@ export interface ReportSummaryDTO {
   marginPct: number;
   itemsSold: number;
   transactionCount: number;
+  /**
+   * Totaal gegeven korting over de periode (T26):
+   * `Σ quantity * (listPriceInclAtSale - salePriceInclAtSale)`. INCL. btw, want dat is
+   * het bedrag dat de klant niet heeft hoeven betalen; de UI zet dit als hoofdbedrag
+   * met {@link discountTotalExcl} eronder, net als bij de omzet.
+   */
+  discountTotalIncl: number;
+  /** Dezelfde korting op EXCL.-basis: het bedrag dat de omzet excl. btw gemist heeft. */
+  discountTotalExcl: number;
 }
 
 /** Eén regel van de balie/werkplaats-uitsplitsing. */
@@ -96,6 +105,9 @@ export interface ChannelBreakdownDTO {
   margin: number;
   itemsSold: number;
   transactionCount: number;
+  /** Gegeven korting binnen dit kanaal (T26), incl. resp. excl. btw. */
+  discountTotalIncl: number;
+  discountTotalExcl: number;
 }
 
 /** Eén bestseller over de gekozen periode. */
@@ -187,6 +199,31 @@ export const MAX_BESTSELLERS_LIMIT = 500;
  */
 const SALE_PRICE_EXCL_SQL = Prisma.sql`ROUND(s."salePriceInclAtSale" / (1 + s."vatRateAtSale" / 100), 2)`;
 
+/**
+ * De NORMALE prijs per stuk EXCLUSIEF btw op het moment van verkoop (T26), op
+ * exact dezelfde manier afgeleid als {@link SALE_PRICE_EXCL_SQL} — per stuk afgerond
+ * op centen, met het historische btw-tarief.
+ *
+ * Wordt UITSLUITEND gebruikt voor de regel "Totaal gegeven korting". Omzet, marge,
+ * bestsellers, merken, categorieën en het omzetverloop blijven op
+ * `salePriceInclAtSale` rekenen, dus op de WERKELIJK BETAALDE prijs: een korting
+ * verlaagt de omzet en de marge, zoals het hoort.
+ */
+const LIST_PRICE_EXCL_SQL = Prisma.sql`ROUND(s."listPriceInclAtSale" / (1 + s."vatRateAtSale" / 100), 2)`;
+
+/**
+ * De gegeven korting over de geselecteerde rijen: `Σ aantal × (normaal − betaald)`,
+ * incl. btw als hoofdbedrag en excl. btw als stuurgetal ernaast (T26).
+ *
+ * Het incl.-bedrag is een exacte som van twee opgeslagen bedragen. Het excl.-bedrag
+ * wordt per prijs apart teruggerekend en dán afgetrokken, niet door het
+ * incl.-verschil door `1 + btw/100` te delen: alleen zo telt de korting excl. op tot
+ * het verschil tussen de omzet excl. die er zónder korting geweest zou zijn en de
+ * omzet excl. die er nu staat.
+ */
+const DISCOUNT_INCL_SQL = Prisma.sql`COALESCE(SUM(s.quantity * (s."listPriceInclAtSale" - s."salePriceInclAtSale")), 0)`;
+const DISCOUNT_EXCL_SQL = Prisma.sql`COALESCE(SUM(s.quantity * (${LIST_PRICE_EXCL_SQL} - ${SALE_PRICE_EXCL_SQL})), 0)`;
+
 function buildWhereSql(filters: ReportFilters): Prisma.Sql {
   const conditions: Prisma.Sql[] = [
     Prisma.sql`s."soldAt" >= ${filters.from}`,
@@ -214,6 +251,8 @@ interface SummaryRow {
   margin: unknown;
   itemsSold: unknown;
   transactionCount: unknown;
+  discountTotalIncl?: unknown;
+  discountTotalExcl?: unknown;
 }
 
 /** Zet een rauwe summary-rij om naar het DTO; apart zodat dit zonder database te testen is. */
@@ -230,6 +269,9 @@ export function summaryRowToDto(row: SummaryRow | undefined): ReportSummaryDTO {
     marginPct: calcMarginPct(purchaseTotal, revenue),
     itemsSold: rawNumericToNumber(row?.itemsSold),
     transactionCount: rawNumericToNumber(row?.transactionCount),
+    // Ontbreekt de kolom of is de periode leeg, dan 0 — nooit `NaN` (T26).
+    discountTotalIncl: rawNumericToNumber(row?.discountTotalIncl),
+    discountTotalExcl: rawNumericToNumber(row?.discountTotalExcl),
   };
 }
 
@@ -249,7 +291,9 @@ export async function getReportSummary(
       COALESCE(SUM(s.quantity * s."salePriceInclAtSale"), 0) AS "revenueIncl",
       COALESCE(SUM(s.quantity * (${SALE_PRICE_EXCL_SQL} - s."purchasePriceExclAtSale")), 0) AS "margin",
       COALESCE(SUM(s.quantity), 0) AS "itemsSold",
-      COUNT(*) AS "transactionCount"
+      COUNT(*) AS "transactionCount",
+      ${DISCOUNT_INCL_SQL} AS "discountTotalIncl",
+      ${DISCOUNT_EXCL_SQL} AS "discountTotalExcl"
     FROM "Sale" s
     JOIN "Part" p ON p.id = s."partId"
     WHERE ${where}
@@ -289,7 +333,9 @@ export async function getChannelBreakdown(
       COALESCE(SUM(s.quantity * s."salePriceInclAtSale"), 0) AS "revenueIncl",
       COALESCE(SUM(s.quantity * (${SALE_PRICE_EXCL_SQL} - s."purchasePriceExclAtSale")), 0) AS "margin",
       COALESCE(SUM(s.quantity), 0) AS "itemsSold",
-      COUNT(*) AS "transactionCount"
+      COUNT(*) AS "transactionCount",
+      ${DISCOUNT_INCL_SQL} AS "discountTotalIncl",
+      ${DISCOUNT_EXCL_SQL} AS "discountTotalExcl"
     FROM "Sale" s
     JOIN "Part" p ON p.id = s."partId"
     WHERE ${where}

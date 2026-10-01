@@ -27,6 +27,20 @@ export const metadata: Metadata = {
   title: "Dashboard — Voorraadbeheer",
 };
 
+/**
+ * Het lage-voorraadlabel (T26, meegenomen kleine fix).
+ *
+ * Stond er eerder als `-{shortage}`, dus "-3". Dat leest als een negatieve
+ * voorraadstand, en negatieve voorraad kan in deze applicatie niet bestaan
+ * (SPEC §3 regel 6) — het label beloofde dus iets onmogelijks. `shortage` is al een
+ * positief getal (hoeveel stuks er tekort zijn); alleen de weergave deugde niet.
+ * Eén functie voor zowel de tabel als de mobiele kaart, zodat de twee niet uit elkaar
+ * kunnen lopen.
+ */
+function formatShortage(shortage: number): string {
+  return `${shortage} ${shortage === 1 ? "stuk" : "stuks"} tekort`;
+}
+
 /** Eén bestsellerlijst, gedeeld tussen de "laatste 30 dagen"- en de all-time-kaart. */
 function BestsellerList({ items }: { items: BestsellerDTO[] }) {
   if (items.length === 0) {
@@ -174,7 +188,9 @@ export default async function HomePage() {
                       <TableCell className="text-right">{part.stockQuantity}</TableCell>
                       <TableCell className="text-right">{part.minStock}</TableCell>
                       <TableCell className="text-right">
-                        <Badge variant="danger">-{part.shortage}</Badge>
+                        <Badge variant="danger">
+                          {formatShortage(part.shortage)}
+                        </Badge>
                       </TableCell>
                     </tr>
                   ))}
@@ -191,7 +207,9 @@ export default async function HomePage() {
                       >
                         {part.name}
                       </Link>
-                      <Badge variant="danger">-{part.shortage}</Badge>
+                      <Badge variant="danger">
+                        {formatShortage(part.shortage)}
+                      </Badge>
                     </div>
                     <p className="text-sm text-gray-500">
                       {part.sku} · {part.supplierName ?? "Geen leverancier"}
@@ -234,16 +252,30 @@ export default async function HomePage() {
                         <span className="ml-2 text-xs text-gray-400">(gearchiveerd)</span>
                       )}
                     </span>
-                    <PriceWithVat
-                      incl={sale.lineTotalInclVat}
-                      excl={sale.lineTotalExclVat}
-                      align="right"
-                      className="shrink-0"
-                    />
+                    {/* Bij korting staat de originele prijs doorgestreept boven
+                        het betaalde bedrag (T26). */}
+                    <div className="shrink-0 text-right">
+                      {sale.hasDiscount && (
+                        <s className="block whitespace-nowrap text-xs text-gray-400">
+                          {formatEuro(sale.lineTotalListInclVat)}
+                        </s>
+                      )}
+                      <PriceWithVat
+                        incl={sale.lineTotalInclVat}
+                        excl={sale.lineTotalExclVat}
+                        align="right"
+                      />
+                    </div>
                   </div>
                   <div className="mt-0.5 flex items-center justify-between gap-2 text-xs text-gray-500">
                     <span>
                       {sale.quantity}x · {getSaleChannelLabel(sale.channel)}
+                      {sale.hasDiscount && (
+                        <span className="text-amber-800">
+                          {" "}
+                          · {formatEuro(sale.discountTotalIncl)} korting
+                        </span>
+                      )}
                     </span>
                     <span>{formatDateTime(sale.soldAt)}</span>
                   </div>

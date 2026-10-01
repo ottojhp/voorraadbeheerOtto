@@ -36,6 +36,7 @@ import {
 } from "@/lib/reporting-period";
 import {
   getBestsellers,
+  getChannelBreakdown,
   getReportSummary,
   getRevenueByBrand,
   summaryRowToDto,
@@ -314,6 +315,9 @@ describe("summaryRowToDto", () => {
       marginPct: 0,
       itemsSold: 0,
       transactionCount: 0,
+      // T26: ook de kortingstotalen vallen terug op 0 en nooit op NaN.
+      discountTotalIncl: 0,
+      discountTotalExcl: 0,
     });
   });
 
@@ -359,6 +363,8 @@ describe("getReportSummary (gemockt)", () => {
         margin: "75.00",
         itemsSold: "6",
         transactionCount: BigInt(3),
+        discountTotalIncl: "12.10",
+        discountTotalExcl: "10.00",
       },
     ]);
 
@@ -374,6 +380,11 @@ describe("getReportSummary (gemockt)", () => {
       marginPct: 25,
       itemsSold: 6,
       transactionCount: 3,
+      // T26: de kortingstotalen komen één-op-één uit de query mee; er wordt niets
+      // van afgeleid en de omzet wordt er niet mee gecorrigeerd (die is al de
+      // BETAALDE omzet).
+      discountTotalIncl: 12.1,
+      discountTotalExcl: 10,
     });
 
     // `$queryRaw` is aangeroepen als tagged template: (strings, ...values). De
@@ -426,6 +437,140 @@ describe("getReportSummary (gemockt)", () => {
     expect(where.values).toContain("HELMET");
     expect(where.values).toContain(from);
     expect(where.values).toContain(to);
+  });
+});
+
+describe("korting in de rapportages (T26)", () => {
+  type SqlFragment = { strings: string[]; values: unknown[] };
+
+  function isSqlFragment(value: unknown): value is SqlFragment {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      Array.isArray((value as SqlFragment).strings)
+    );
+  }
+
+  /**
+   * Bouwt de SQL van een `$queryRaw`-aanroep weer op zoals Postgres hem te zien
+   * krijgt: de tekstfragmenten mét de geïnterpoleerde `Prisma.Sql`-stukken op hun
+   * eigen plek, en elke gebonden parameter als `?`.
+   *
+   * Nodig omdat `strings.join("")` van alleen het buitenste template de ingevoegde
+   * expressies WEGLAAT — dan lijkt `SUM(s.quantity * )` in de tekst te staan en kan
+   * er niet op gecontroleerd worden welke prijs er gesommeerd wordt. Juist dát is
+   * hier de vraag: betaalde prijs of normale prijs.
+   */
+  function renderSql(strings: readonly string[], values: unknown[]): string {
+    return strings
+      .map((text, index) => {
+        if (index >= values.length) {
+          return text;
+        }
+        const value = values[index];
+        return (
+          text +
+          (isSqlFragment(value)
+            ? renderSql(value.strings, value.values)
+            : "?")
+        );
+      })
+      .join("");
+  }
+
+  /** De volledige SQL-tekst van de LAATSTE `$queryRaw`-aanroep. */
+  function lastSqlText(): string {
+    const call = prismaMock.$queryRaw.mock.calls.at(-1) as
+      | [TemplateStringsArray, ...unknown[]]
+      | undefined;
+    expect(call).toBeDefined();
+    const [strings, ...values] = call!;
+    return renderSql(strings, values);
+  }
+
+  const from = new Date("2026-09-01T00:00:00.000Z");
+  const to = new Date("2026-09-30T23:59:59.999Z");
+
+  it("rekent omzet en marge met de BETAALDE prijs, niet met de normale prijs", async () => {
+    prismaMock.$queryRaw.mockResolvedValueOnce([]);
+    await getReportSummary({ from, to });
+
+    const sql = lastSqlText();
+
+    // Omzet incl., omzet excl. en de marge staan allemaal op `salePriceInclAtSale`,
+    // en dat veld is sinds T26 de WERKELIJK BETAALDE prijs. Een korting verlaagt dus
+    // de omzet en de marge, zoals het hoort.
+    expect(sql).toContain(
+      'SUM(s.quantity * s."salePriceInclAtSale"), 0) AS "revenueIncl"',
+    );
+    expect(sql).toContain(
+      'SUM(s.quantity * ROUND(s."salePriceInclAtSale" / (1 + s."vatRateAtSale" / 100), 2)), 0) AS "revenue"',
+    );
+    expect(sql).toContain(
+      'SUM(s.quantity * (ROUND(s."salePriceInclAtSale" / (1 + s."vatRateAtSale" / 100), 2) - s."purchasePriceExclAtSale")), 0) AS "margin"',
+    );
+
+    // De normale prijs komt in de omzet- en margekolommen NIET voor. Dit is de
+    // assertie die zou breken als iemand de rapportage ooit op de normale prijs laat
+    // rekenen: dan zou een korting onzichtbaar blijven in de omzet.
+    const omzetEnMarge = sql.slice(0, sql.indexOf('AS "discountTotalIncl"'));
+    expect(omzetEnMarge).toContain('"salePriceInclAtSale"');
+    expect(
+      omzetEnMarge.slice(0, omzetEnMarge.indexOf('AS "transactionCount"')),
+    ).not.toContain('"listPriceInclAtSale"');
+  });
+
+  it("berekent de gegeven korting als Σ aantal × (normaal − betaald)", async () => {
+    prismaMock.$queryRaw.mockResolvedValueOnce([]);
+    await getReportSummary({ from, to });
+
+    const sql = lastSqlText();
+
+    // Incl. btw: een exacte som van twee opgeslagen bedragen.
+    expect(sql).toContain(
+      'SUM(s.quantity * (s."listPriceInclAtSale" - s."salePriceInclAtSale")), 0) AS "discountTotalIncl"',
+    );
+    // Excl. btw: elke prijs APART teruggerekend en dan afgetrokken, met hetzelfde
+    // ROUND als de omzet — anders telt de korting excl. niet op tot het verschil
+    // tussen de omzet met en zonder korting.
+    expect(sql).toContain(
+      'SUM(s.quantity * (ROUND(s."listPriceInclAtSale" / (1 + s."vatRateAtSale" / 100), 2) - ROUND(s."salePriceInclAtSale" / (1 + s."vatRateAtSale" / 100), 2))), 0) AS "discountTotalExcl"',
+    );
+  });
+
+  it("laat de bestsellers volledig op de betaalde prijs rekenen", async () => {
+    prismaMock.$queryRaw.mockResolvedValueOnce([]);
+    await getBestsellers({ from, to });
+
+    const sql = lastSqlText();
+    expect(sql).toContain('s."salePriceInclAtSale"');
+    // Geen enkele verwijzing naar de normale prijs: stuks, omzet en marge per
+    // onderdeel gaan over wat er werkelijk binnenkwam.
+    expect(sql).not.toContain('"listPriceInclAtSale"');
+  });
+
+  it("geeft de korting ook per kanaal mee, uit dezelfde expressie", async () => {
+    prismaMock.$queryRaw.mockResolvedValueOnce([
+      {
+        channel: "COUNTER",
+        revenue: "300.00",
+        revenueIncl: "363.00",
+        margin: "75.00",
+        itemsSold: "6",
+        transactionCount: BigInt(3),
+        discountTotalIncl: "12.10",
+        discountTotalExcl: "10.00",
+      },
+    ]);
+
+    const rows = await getChannelBreakdown({ from, to });
+    const counter = rows.find((row) => row.channel === "COUNTER");
+    const workshop = rows.find((row) => row.channel === "WORKSHOP");
+
+    expect(counter?.discountTotalIncl).toBe(12.1);
+    expect(counter?.discountTotalExcl).toBe(10);
+    // Een kanaal zonder verkopen in de periode komt er met nullen bij, niet met NaN.
+    expect(workshop?.discountTotalIncl).toBe(0);
   });
 });
 

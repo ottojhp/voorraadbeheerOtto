@@ -11,6 +11,7 @@ import {
   SCAN_FIELD_LABELS,
   SCAN_KIND_LABELS,
   SCAN_SOURCE_LABELS,
+  describeScanCertainty,
   describeScanMatch,
   describeScanOutcome,
   isStrongMatch,
@@ -89,5 +90,65 @@ describe("describeScanOutcome", () => {
     expect(describeScanOutcome(0)).toBe("Geen onderdeel gevonden");
     expect(describeScanOutcome(1)).toBe("Eén onderdeel gevonden");
     expect(describeScanOutcome(3)).toBe("3 mogelijke onderdelen gevonden");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T25 — hoe zeker is de treffer
+// ---------------------------------------------------------------------------
+
+describe("describeScanCertainty", () => {
+  it("noemt het aantal gecorrigeerde tekens bij een benaderende treffer", () => {
+    // Dit is wat de gebruiker moet weten voordat hij bevestigt: één teken
+    // gecorrigeerd is iets anders dan twee.
+    expect(
+      describeScanCertainty(match({ kind: "approximate", distance: 1 })),
+    ).toBe("treffer na correctie van 1 teken");
+    expect(
+      describeScanCertainty(match({ kind: "approximate", distance: 2 })),
+    ).toBe("treffer na correctie van 2 tekens");
+  });
+
+  it("houdt de bestaande teksten voor de hardere treffers", () => {
+    expect(describeScanCertainty(match({ kind: "exact" }))).toBe(
+      "exacte treffer",
+    );
+    expect(describeScanCertainty(match({ kind: "normalized" }))).toBe(
+      SCAN_KIND_LABELS.normalized,
+    );
+    expect(describeScanCertainty(match({ kind: "contained" }))).toBe(
+      SCAN_KIND_LABELS.contained,
+    );
+  });
+
+  it("valt terug op een vaste tekst als het getal ontbreekt", () => {
+    // `distance` is optioneel in het DTO; een treffer zonder getal mag nooit een
+    // lege of halve zin opleveren.
+    expect(describeScanCertainty(match({ kind: "approximate" }))).toBe(
+      SCAN_KIND_LABELS.approximate,
+    );
+    expect(
+      describeScanCertainty(match({ kind: "approximate", distance: 0 })),
+    ).toBe(SCAN_KIND_LABELS.approximate);
+  });
+
+  it("vertrouwt een benaderende treffer nooit zonder meer", () => {
+    // De kaart wordt daardoor oranje en krijgt "controleer de verpakking".
+    expect(isStrongMatch(match({ kind: "approximate", distance: 1 }))).toBe(
+      false,
+    );
+  });
+
+  it("zet het aantal gecorrigeerde tekens ook in de volledige regel", () => {
+    expect(
+      describeScanMatch(
+        match({
+          field: "supplierArticleNumber",
+          value: "PIA-4T-8455",
+          kind: "approximate",
+          distance: 1,
+        }),
+      ),
+    ).toBe("leveranciersnummer PIA-4T-8455 — treffer na correctie van 1 teken");
   });
 });

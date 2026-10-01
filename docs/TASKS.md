@@ -661,6 +661,126 @@ vandaag in de zaak gebeurd".
 
 ---
 
+## T25 — Tekstherkenning betrouwbaar maken
+**Status:** review
+**Afhankelijk van:** T20
+
+**Beschrijving**
+Terugkoppeling van de eigenaar na gebruik in de werkplaats: **barcodes scannen gaat goed,
+gedrukte artikelnummers niet** — soms pakt hij het, soms komt er onzin uit. Dat is
+conform de verwachting uit T20, waar de herkenning alleen op gegenereerde afbeeldingen
+gemeten was.
+
+Het uitgangspunt voor de oplossing: de voorraad is een **bekende, eindige lijst** nummers.
+De app hoeft de tekst niet perfect te lezen, hij hoeft alleen te bepalen wélk bekend
+nummer het dichtst in de buurt komt. Nu eist hij een exacte match na normalisatie, dus één
+verkeerd gelezen teken buiten het verwisselingslijstje laat alles mislukken.
+
+**Acceptatiecriteria**
+
+- [ ] **Benaderend matchen.** Vergelijk de gelezen tekst met alle bekende `sku`,
+      `barcode` en `supplierArticleNumber` via een bewerkingsafstand (Damerau-Levenshtein,
+      dus ook verwisselde tekens). Accepteer een treffer tot en met afstand 2 bij nummers
+      vanaf 6 tekens, en tot en met 1 bij kortere. Pure functie, met tests.
+- [ ] **Alleen bij ondubbelzinnigheid automatisch voorstellen.** Zijn er twee kandidaten op
+      dezelfde afstand, toon dan beide en laat de gebruiker kiezen. Nooit gokken.
+- [ ] De getoonde kandidaat vermeldt hoe zeker de treffer is (exact / na correctie van
+      N tekens) zodat de gebruiker weet wanneer hij de verpakking moet controleren.
+- [ ] **Beeldbewerking vóór de herkenning:** snijd bij tot het richtkader, zet om naar
+      grijswaarden, verhoog het contrast en schaal op naar een werkbare hoogte. Tesseract
+      presteert hier aantoonbaar beter op dan op een rauw camerabeeld.
+- [ ] **Tekenset beperken** (`tessedit_char_whitelist`) tot hoofdletters, cijfers, streepje
+      en punt. Artikelnummers bevatten niets anders, en dit scheelt een hoop onzin.
+- [ ] **Meerdere metingen vergelijken:** lees meerdere frames en gebruik alleen een
+      resultaat dat in minstens twee metingen hetzelfde oplevert, of neem de kandidaat die
+      het vaakst voorkomt. Eén losse meting is te wisselvallig gebleken.
+- [ ] **Toon altijd de ruwe gelezen tekst**, ook bij een treffer, zodat de gebruiker ziet
+      waar de app op afging en het kan corrigeren.
+- [ ] **Scheefstand**: T20 stelde vast dat tien graden kanteling de herkenning volledig
+      breekt, en dat `rotateAuto` pas vanaf de tweede meetronde helpt. Zet die vlag aan nu
+      er toch meerdere rondes zijn, en meet of het verschil maakt.
+- [ ] **Barcode blijft leidend.** Die werkt goed volgens de eigenaar; verander niets aan
+      die voorrang.
+- [ ] Meet de verbetering en rapporteer eerlijk. Bouw een testset van minstens vijftien
+      afbeeldingen, waaronder gedraaide, onscherpe en contrastarme, en geef het aantal
+      juiste treffers vóór en ná. Verzin geen percentages.
+
+---
+
+## T26 — Korting bij verkoop
+**Status:** review
+**Afhankelijk van:** —
+
+**Beschrijving**
+Bij het registreren van een verkoop moet de prijs per stuk aangepast kunnen worden. Zowel
+de normale prijs als de werkelijk betaalde prijs worden vastgelegd, zodat korting later
+terug te zien is. De standaardprijs van het onderdeel verandert nooit.
+
+**Acceptatiecriteria**
+- [ ] `Sale` krijgt `listPriceInclAtSale` (de normale prijs op dat moment) naast het
+      bestaande `salePriceInclAtSale`, dat voortaan de **werkelijk betaalde** prijs is.
+      Plus `discountReason String?`. Migratie zonder dataverlies: bestaande rijen krijgen
+      `listPriceInclAtSale = salePriceInclAtSale` (dus geen korting). Handgeschreven
+      migratie, geen `migrate diff` die kolommen weggooit.
+- [ ] Op het verkoopscherm, na het kiezen van een onderdeel: een invoerveld met de prijs
+      incl. btw, vooringevuld met de normale prijs. **Dit veld is leidend.**
+- [ ] Snelknoppen voor 5%, 10% en 15% korting en een veld voor een vast kortingsbedrag;
+      beide vullen het prijsveld, dat daarna gewoon handmatig overschreven kan worden.
+- [ ] Live zichtbaar: originele prijs, korting in euro's én procenten, nieuwe prijs incl.
+      en excl. btw, en de marge die overblijft.
+- [ ] **Waarschuwing, geen blokkade**, als de prijs onder de inkoopprijs zakt. Prijs mag
+      niet negatief zijn en niet hoger dan de normale prijs zonder dat dat duidelijk is.
+- [ ] Optioneel veld "reden korting" (vrije tekst, geen persoonsgegevens).
+- [ ] Rapportages, dashboard en bestsellers rekenen met de **werkelijk betaalde** prijs.
+      Controleer dat dit al zo is en bewijs het.
+- [ ] Rapportages krijgen een regel **"Totaal gegeven korting"** over de gekozen periode:
+      `Σ aantal × (listPrice − betaalde prijs)`, incl. btw als hoofdbedrag met excl.
+      eronder, conform de huisstijl.
+- [ ] In "Laatste verkopen" (dashboard én verkoopscherm) is zichtbaar dat er korting is
+      gegeven, bijvoorbeeld met de originele prijs doorgestreept.
+- [ ] Gebruik voor de kortingsknoppen géén gecontroleerde radiogroep in een
+      server-action-formulier; dat patroon liep eerder aantoonbaar uit de pas met de
+      verstuurde waarde. Zie `PartForm` voor de werkende aanpak.
+
+**Meegenomen kleine fixes**
+- [ ] `src/app/(app)/rapportages/page.tsx` regel ~228: de zin die naar `@/lib/csv`
+      verwijst is ontwikkelaarstaal en moet weg bij de exportknop.
+- [ ] `src/app/(app)/page.tsx` regels ~177 en ~194: het lage-voorraadlabel toont
+      `-{shortage}`, wat leest als negatieve voorraad. Maak er "1 tekort" van (correct
+      enkelvoud/meervoud). Het veld `shortage` is al positief; alleen het label deugt niet.
+
+---
+
+## T27 — Montage en arbeid per onderdeel (alleen informatief)
+**Status:** todo
+**Afhankelijk van:** T26 (vanwege de migratievolgorde)
+
+**Beschrijving**
+Montagetijd en arbeidskosten bij een onderdeel, zodat ze opgezocht en aan de klant genoemd
+kunnen worden. **Besluit van de eigenaar: arbeid wordt NIET meegeboekt bij een verkoop en
+komt niet in de rapportages.** De verkoopregistratie blijft ongewijzigd.
+
+**Acceptatiecriteria**
+- [ ] `Part` krijgt `assemblyMinutes Int?` en `laborCostInclOverride Decimal(10,2)?`.
+      Migratie zonder dataverlies.
+- [ ] Nieuw model voor instellingen (bijvoorbeeld een `Setting`-tabel met sleutel/waarde,
+      of een singleton) met het **standaard uurtarief incl. btw**. Eén plek, met een
+      typeveilige accessor en een verstandige standaardwaarde als er nog niets ingesteld is.
+- [ ] Een eenvoudige pagina (bv. `/instellingen`) waar het uurtarief aangepast wordt, met
+      Zod-validatie. Bereikbaar vanuit de zijbalk, niet uit de mobiele onderbalk.
+- [ ] Arbeidskosten worden berekend als `montagetijd / 60 × uurtarief`, tenzij er een
+      handmatig bedrag is ingevuld; dat overschrijft de berekening.
+- [ ] Op de onderdelenlijst en detailpagina, **alleen als ingevuld**: montagetijd,
+      arbeidskosten, en "Totaal incl. montage" (onderdeel + arbeid), elk incl. én excl. btw.
+- [ ] **Let op de btw-grondslag:** arbeid is 21%, maar een onderdeel kan een afwijkend
+      tarief hebben. Het excl.-totaal moet dus per deel berekend worden en niet met één
+      tarief over de som. Test dit met een onderdeel op 9% btw.
+- [ ] **Arbeid telt niet mee in de voorraadwaarde** op het dashboard. Controleer dat
+      expliciet en bewijs het met een query.
+- [ ] Arbeid verschijnt nergens in de rapportages.
+
+---
+
 ## Feedback van review
 
 ### Reviewronde 1 — 2026-09-22 (PM)
@@ -953,3 +1073,44 @@ Ze worden niet tussendoor gebouwd.
   bestsellers is het verschil hooguit een uur rond een DST-overgang; geen weergave en
   niet gefixt in de tijdzone-fix. Eventueel meenemen als dat venster ooit op de
   Amsterdamse dag moet aansluiten.
+
+- (2026-10-01, bouwsessie T25) **Observaties, niet gebouwd:**
+  1. `findPartsByScannedText()` leest alle actieve onderdelen in en matcht in Node. Met het
+     benaderend matchen erbij wordt per kandidaat binnen de lengtegrens ook de afstand tot
+     alle andere sleutels berekend. Bij 40 onderdelen (111 sleutels) onmeetbaar, maar dit is
+     de plek die bij enkele duizenden onderdelen als eerste gaat knellen. De oplossing is
+     dan een opgeslagen genormaliseerde zoekkolom met index, niet een snellere lus.
+  2. De drempel voor benaderend matchen wordt berekend over de ACTIEVE onderdelen. Een
+     onderdeel archiveren maakt de drempel van zijn buurman dus ruimer. Verdedigbaar (een
+     gearchiveerd onderdeel kan niet gekozen worden) maar het is een stille verandering;
+     het is het overwegen waard om gearchiveerde nummers wél in de drempelberekening mee
+     te nemen.
+  3. De tekenset-beperking (`tessedit_char_whitelist`) deed in de meting van T25 vrijwel
+     niets: 27 van de 32 beelden gaven letterlijk dezelfde tekst, en de uitkomst van het
+     matchen veranderde geen enkele keer. Hij staat aan om ruis uit de omringende tekst te
+     weren, niet omdat hij treffers oplevert. Als er ooit een reden is om Tesseract-
+     instellingen op te schonen, is dit de eerste kandidaat.
+  4. Het scanscherm doet tot zes leesrondes van elk ~0,2-0,8 s op een Mac. Op een telefoon
+     is dat navenant trager en dat is nooit gemeten. Als dat in de werkplaats te traag
+     blijkt, is het aantal rondes (`MAX_ATTEMPTS`) de eerste knop om aan te draaien.
+
+- (2026-10-01, bouwsessie T26) **Observaties, niet gebouwd:**
+  1. De CSV-export van de bestsellers (`/rapportages/export`) heeft géén kortingskolom.
+     De kolommen omzet en marge staan er op de betaalde prijs, wat klopt, maar wie de
+     gegeven korting per onderdeel in Excel wil zien kan dat alleen via de schermkaart
+     "Totaal gegeven korting" over de hele periode. Een kolom "korting (excl. btw)" per
+     onderdeel is een kleine uitbreiding op `getBestsellers()`.
+  2. Op `/onderdelen` en de onderdeel-detailpagina is nergens te zien hoeveel korting er
+     in het verleden op dat onderdeel gegeven is. Dat is precies het getal waarmee je
+     beslist of de normale prijs te hoog staat. Nu alleen af te leiden uit de rapportage
+     per periode.
+  3. Een kortingspercentage van bijvoorbeeld 10% op een prijs met een oneven cent levert
+     een percentage dat net naast de 10 ligt (€ 16,95 → € 15,26 is 9,97%). Dat wordt met
+     één decimaal als "10,0%" getoond en is dus consistent met het bedrag, maar wie met
+     twee decimalen wil rapporteren ziet 9,97. Als de eigenaar ooit op exacte
+     kortingspercentages wil sturen, hoort het percentage zelf opgeslagen te worden in
+     plaats van afgeleid — dat is een datamodelwijziging, geen weergavekwestie.
+  4. `Sale.reference` (werkorder) en `Sale.discountReason` zijn allebei vrije tekst met
+     een AVG-waarschuwing bij het veld en geen enkele inhoudelijke controle. Dat is een
+     bewuste keuze (elke regex weigert ook legitieme invoer), maar het betekent dat de
+     AVG-naleving volledig op de discipline aan de balie leunt.

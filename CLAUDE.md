@@ -17,12 +17,15 @@ Starten (als hij niet luistert op 5433):
 
 ```
 SP="/private/tmp/claude-501/-Users-otto-Documents-GitHub-Eerste-test/a943ea32-7688-4b3d-8af6-a8f70bc6f2a2/scratchpad"
-"$SP/pg/dist/bin/pg_ctl" -D "$SP/pgdata" \
+"$SP/pg/dist/bin/pg_ctl" -D "$SP/pgdata2" \
   -o "-p 5433 -c unix_socket_directories= -c listen_addresses=127.0.0.1" \
   -l "$SP/pg.log" start
 ```
 
-**De scratchpad is tijdelijk.** Node 22, de Postgres-binaries en de database worden
+**De scratchpad is tijdelijk, en wordt ook MIDDEN IN een sessie opgeruimd.** Dat is
+tijdens de bouw twee keer gebeurd: één keer verdween `npm` (node zelf bleef werken, val dan
+terug op `node ./node_modules/<tool>`), één keer verdween de hele Postgres-datadirectory
+inclusief `initdb`. Node 22, de Postgres-binaries en de database worden dus
 opgeruimd. Zijn ze weg, dan moeten Node en Postgres opnieuw gedownload worden, gevolgd
 door `npx prisma migrate deploy` en `npm run db:seed`. Voor iets blijvends hoort hier een
 externe `DATABASE_URL` (Neon of Vercel Postgres).

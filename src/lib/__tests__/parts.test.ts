@@ -743,6 +743,8 @@ describe("searchPartsForSale", () => {
         stockQuantity: 8,
         salePriceIncl: new Prisma.Decimal("30.19"),
         vatRate: new Prisma.Decimal("21.00"),
+        // T26: het verkoopscherm toont de resterende marge bij een korting.
+        purchasePriceExcl: new Prisma.Decimal("12.50"),
         brand: { name: "Vespa" },
       },
       {
@@ -754,6 +756,7 @@ describe("searchPartsForSale", () => {
         stockQuantity: 0,
         salePriceIncl: new Prisma.Decimal("11.50"),
         vatRate: new Prisma.Decimal("21.00"),
+        purchasePriceExcl: new Prisma.Decimal("4.80"),
         brand: null,
       },
     ]);
@@ -773,6 +776,7 @@ describe("searchPartsForSale", () => {
         vatRate: 21,
         // 30,19 / 1,21 = 24,9504... → 24,95
         salePriceExcl: 24.95,
+        purchasePriceExcl: 12.5,
       },
       {
         id: "part_2",
@@ -786,6 +790,7 @@ describe("searchPartsForSale", () => {
         vatRate: 21,
         // 11,50 / 1,21 = 9,5041... → 9,50
         salePriceExcl: 9.5,
+        purchasePriceExcl: 4.8,
       },
     ]);
   });

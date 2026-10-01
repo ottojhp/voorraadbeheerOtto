@@ -53,11 +53,18 @@ export async function registerSaleAction(
   const quantity = formData.get("quantity")?.toString() ?? "";
   const channel = formData.get("channel")?.toString() ?? "";
   const reference = formData.get("reference")?.toString() ?? "";
+  // T26: het prijsveld is leidend. Ontbreekt het (geen JavaScript, of een oudere
+  // POST), dan blijft het `null` en boekt `registerSale()` de normale prijs — geen
+  // korting in plaats van een verzonnen korting.
+  const unitPriceIncl = formData.get("unitPriceIncl")?.toString() ?? null;
+  const discountReason = formData.get("discountReason")?.toString() ?? "";
 
   try {
     const { sale } = await registerSale({
       partId,
       quantity,
+      unitPriceIncl,
+      discountReason,
       // Onbekende waarden worden door het Zod-schema afgekeurd; hier bewust geen
       // cast naar het enum-type, zodat een geknutselde POST niet langs de validatie
       // glipt.

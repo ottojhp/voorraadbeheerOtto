@@ -42,6 +42,7 @@ import { ErrorMessage } from "@/components/ErrorMessage";
 import { PriceWithVat } from "@/components/PriceWithVat";
 import { TextScanner, type TextScanResult } from "@/components/TextScanner";
 import { getCategoryLabel } from "@/lib/labels";
+import { MIN_OCR_AGREEMENT, describeOcrAgreement } from "@/lib/ocr-consensus";
 import type { PartScanDTO, PartScanMatchDTO, ScanSource } from "@/lib/queries/types";
 
 import { StockStepper } from "../StockStepper";
@@ -57,6 +58,12 @@ import {
 /* -------------------------------------------------------------------------- */
 /* Stappen                                                                     */
 /* -------------------------------------------------------------------------- */
+
+/** Hoe hard de meting was: in hoeveel van de leesrondes hetzelfde kwam (T25). */
+interface OcrMeasurement {
+  agreement: number;
+  readings: number;
+}
 
 type Stage =
   | { kind: "intro" }
@@ -75,43 +82,59 @@ export function ScanScreen() {
   const [, startTransition] = useTransition();
   /** Melding die niet bij één stap hoort, bv. "onderdeel is inmiddels gearchiveerd". */
   const [notice, setNotice] = useState<string | null>(null);
+  /**
+   * Hoe hard de METING was: in hoeveel van de rondes hetzelfde gelezen is (T25).
+   * Alleen gevuld na een OCR-scan; bij handmatige invoer en bij een barcode is er
+   * niets te meten.
+   */
+  const [measurement, setMeasurement] = useState<OcrMeasurement | null>(null);
 
   /* ---------------------------------------------------------------------- */
   /* Opzoeken                                                              */
   /* ---------------------------------------------------------------------- */
 
-  const lookup = useCallback((text: string, source: ScanSource) => {
-    setNotice(null);
+  const lookup = useCallback(
+    (text: string, source: ScanSource, reading?: OcrMeasurement) => {
+      setNotice(null);
+      setMeasurement(reading ?? null);
 
-    const trimmed = text.trim();
-    if (trimmed.length === 0) {
-      // Niets gelezen. Dat is geen fout van de gebruiker, maar hij moet het wél
-      // weten en verder kunnen (SPEC §F8).
-      setStage({
-        kind: "result",
-        result: {
-          ok: false,
-          recognizedText: "",
-          message:
-            "De camera kon geen tekst lezen. Houd de telefoon stiller en zorg voor meer licht, of typ het nummer hieronder in.",
-        },
+      const trimmed = text.trim();
+      if (trimmed.length === 0) {
+        // Niets gelezen. Dat is geen fout van de gebruiker, maar hij moet het wél
+        // weten en verder kunnen (SPEC §F8).
+        setStage({
+          kind: "result",
+          result: {
+            ok: false,
+            recognizedText: "",
+            message:
+              "De camera kon geen tekst lezen. Houd de telefoon stiller en zorg voor meer licht, of typ het nummer hieronder in.",
+          },
+        });
+        return;
+      }
+
+      setStage({ kind: "looking-up", text: trimmed, source });
+      setManualText(trimmed);
+
+      startTransition(async () => {
+        const result = await lookupScannedTextAction({ text: trimmed, source });
+        setStage({ kind: "result", result });
       });
-      return;
-    }
-
-    setStage({ kind: "looking-up", text: trimmed, source });
-    setManualText(trimmed);
-
-    startTransition(async () => {
-      const result = await lookupScannedTextAction({ text: trimmed, source });
-      setStage({ kind: "result", result });
-    });
-  }, []);
+    },
+    [],
+  );
 
   const handleScanResult = useCallback(
     (result: TextScanResult) => {
       // Camera uit; bevestigen gebeurt op een rustig scherm.
-      lookup(result.text, result.source);
+      lookup(
+        result.text,
+        result.source,
+        result.source === "ocr" && typeof result.readings === "number"
+          ? { agreement: result.agreement ?? 0, readings: result.readings }
+          : undefined,
+      );
     },
     [lookup],
   );
@@ -207,6 +230,7 @@ export function ScanScreen() {
       {stage.kind === "result" && stage.result.ok && (
         <ScanResultPanel
           result={stage.result}
+          measurement={measurement}
           onConfirm={confirmMatch}
           onRescan={() => setStage({ kind: "scanning" })}
         />
@@ -245,11 +269,17 @@ export function ScanScreen() {
 
 interface ScanResultPanelProps {
   result: Extract<ScanLookupResult, { ok: true }>;
+  measurement: OcrMeasurement | null;
   onConfirm: (match: PartScanMatchDTO) => void;
   onRescan: () => void;
 }
 
-function ScanResultPanel({ result, onConfirm, onRescan }: ScanResultPanelProps) {
+function ScanResultPanel({
+  result,
+  measurement,
+  onConfirm,
+  onRescan,
+}: ScanResultPanelProps) {
   const { matches, recognizedText, source } = result;
 
   return (
@@ -266,6 +296,18 @@ function ScanResultPanel({ result, onConfirm, onRescan }: ScanResultPanelProps) 
         <p className="mt-2 whitespace-pre-wrap break-all rounded-md bg-gray-50 px-3 py-2 font-mono text-sm text-gray-800">
           {recognizedText}
         </p>
+        {/* En hoe hard die meting was: één losse ronde is wisselvallig (T25). */}
+        {measurement !== null && (
+          <p
+            className={`mt-1 text-xs ${
+              measurement.agreement >= MIN_OCR_AGREEMENT
+                ? "text-gray-500"
+                : "text-amber-800"
+            }`}
+          >
+            {describeOcrAgreement(measurement.agreement, measurement.readings)}
+          </p>
+        )}
         {matches.length === 0 && (
           <p className="mt-3 text-sm text-gray-700">
             Geen onderdeel met deze barcode, artikelcode of leveranciersnummer. Pas

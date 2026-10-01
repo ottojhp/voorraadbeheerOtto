@@ -30,13 +30,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { extractArticleNumberTokens } from "@/lib/article-number";
 import {
   createOcrEngine,
   drawOcrFrame,
   type OcrEngine,
   type OcrProgress,
 } from "@/lib/ocr-engine";
+import { MIN_OCR_AGREEMENT, pickOcrConsensus } from "@/lib/ocr-consensus";
 
 import { BarcodeScanner } from "./BarcodeScanner";
 
@@ -55,10 +55,11 @@ export const OCR_HEAD_START_MS = 1200;
 const OCR_INTERVAL_MS = 700;
 
 /**
- * Na zoveel rondes zonder bruikbaar artikelnummer geven we op en laten we zien wat
- * er dán gelezen is. Niet eerder: de eerste rondes zijn vaak onscherp doordat de
- * gebruiker de telefoon nog aan het richten is. Niet later: blijven draaien zonder
- * ooit iets te zeggen is precies de stille mislukking die SPEC §F8 verbiedt.
+ * Na zoveel rondes zonder overeenstemming geven we op en laten we zien wat er dán
+ * het vaakst gelezen is. Niet eerder: de eerste rondes zijn vaak onscherp doordat
+ * de gebruiker de telefoon nog aan het richten is, en met `rotateAuto` is pas de
+ * tweede ronde op een scheef beeld bruikbaar (T20). Niet later: blijven draaien
+ * zonder ooit iets te zeggen is precies de stille mislukking die SPEC §F8 verbiedt.
  */
 const MAX_ATTEMPTS = 6;
 
@@ -71,6 +72,13 @@ export interface TextScanResult {
   text: string;
   /** Waar hij vandaan komt. Bepaalt hoe streng er gematcht wordt. */
   source: "barcode" | "ocr";
+  /**
+   * Hoeveel van de metingen hetzelfde artikelnummer opleverden, en hoeveel
+   * metingen er gedaan zijn (T25). Alleen bij `source: "ocr"`; een barcode wordt
+   * niet meerdere keren gemeten, die heeft een checksum.
+   */
+  agreement?: number;
+  readings?: number;
 }
 
 export interface TextScannerProps {
@@ -170,8 +178,11 @@ export function TextScanner({
      */
     let cancelled = false;
     let timer: number | null = null;
-    /** De langste tekst die we gelezen hebben, voor als er geen nummer in zit. */
-    let bestText = "";
+    /**
+     * Alle metingen van deze scansessie, in leesvolgorde. Eén losse meting is te
+     * wisselvallig gebleken; `pickOcrConsensus` vergelijkt ze (T25).
+     */
+    const readings: string[] = [];
 
     const canvas =
       canvasRef.current ?? (canvasRef.current = document.createElement("canvas"));
@@ -249,20 +260,39 @@ export function TextScanner({
           return;
         }
 
-        const trimmed = text.trim();
-        if (trimmed.length > bestText.length) {
-          bestText = trimmed;
-        }
+        readings.push(text.trim());
 
-        if (extractArticleNumberTokens(trimmed).length > 0) {
-          report({ text: trimmed, source: "ocr" });
+        // T25: alleen doorgeven wat in minstens twee metingen hetzelfde opleverde.
+        // Eén verminkte ronde haalt het daarmee niet meer — dat was de oorzaak van
+        // "soms komt er onzin uit".
+        const agreed = pickOcrConsensus(readings);
+        if (agreed !== null) {
+          report({
+            text: agreed.text,
+            source: "ocr",
+            agreement: agreed.agreement,
+            readings: agreed.readings,
+          });
           return;
         }
 
         if (attempts >= MAX_ATTEMPTS) {
-          // Opgeven, maar niet zwijgen: laat zien wat er wél gelezen is, zodat de
-          // gebruiker het kan verbeteren (T20 criterium 7).
-          report({ text: bestText, source: "ocr" });
+          // Opgeven, maar niet zwijgen: de vaakst voorkomende kandidaat, of anders
+          // de langste gelezen tekst, zodat de gebruiker het kan verbeteren (T20
+          // criterium 7). Het aantal metingen gaat mee, zodat het scherm kan
+          // zeggen dat dit resultaat door niets bevestigd is.
+          const fallback = pickOcrConsensus(readings, 1);
+          const nonEmpty = readings.filter((item) => item.length > 0);
+          const longest = nonEmpty.reduce(
+            (best, item) => (item.length > best.length ? item : best),
+            "",
+          );
+          report({
+            text: fallback?.text ?? longest,
+            source: "ocr",
+            agreement: fallback?.agreement ?? 0,
+            readings: nonEmpty.length,
+          });
           return;
         }
 
@@ -356,9 +386,15 @@ function describeOcrState(state: OcrState, hasVideo: boolean): string {
       return `${label} ${Math.round(fraction * 100)}%`;
     }
     case "ready":
-      return state.busy
-        ? `Tekst lezen… (poging ${state.attempts})`
-        : "Richt op het artikelnummer of de barcode";
+      if (state.busy) {
+        return `Tekst lezen… (meting ${state.attempts} van ${MAX_ATTEMPTS})`;
+      }
+      if (state.attempts === 0) {
+        return "Richt op het artikelnummer of de barcode";
+      }
+      // Waarom het nog doorgaat terwijl er al iets gelezen is: er zijn minstens
+      // twee metingen nodig die hetzelfde zeggen (T25).
+      return `Houd stil — ${MIN_OCR_AGREEMENT} metingen moeten hetzelfde lezen (${state.attempts} van ${MAX_ATTEMPTS} gedaan)`;
     case "unavailable":
       return "Tekstherkenning is niet beschikbaar. De barcodescanner werkt nog wel.";
   }
