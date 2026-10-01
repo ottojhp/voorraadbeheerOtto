@@ -98,6 +98,17 @@ export function ScanIcon(props: IconProps) {
   );
 }
 
+/** Voorraadmutaties (T24): een klok met een terugdraaiende pijl, "wat is er gebeurd". */
+export function HistoryIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1" />
+      <path d="M3.5 4.5v4h4" />
+      <path d="M12 7.5V12l3 2" />
+    </svg>
+  );
+}
+
 export function SpinnerIcon(props: IconProps) {
   return (
     <svg

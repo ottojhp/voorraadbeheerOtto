@@ -629,6 +629,38 @@ vervuilt precies de uitsplitsing waarvoor dat kanaal bestaat.
 
 ---
 
+## T24 — Voorraadgrootboek zichtbaar maken
+**Status:** review
+**Afhankelijk van:** T17, T19, T22
+
+**Beschrijving**
+Sinds T17/T19/T22 wordt elke voorraadwijziging vastgelegd in `StockMutation`, maar geen
+enkel scherm toont die regels. De eigenaar vroeg er expliciet naar. Twee weergaven, want
+het zijn twee verschillende vragen: "wat is er met dit onderdeel gebeurd" en "wat is er
+vandaag in de zaak gebeurd".
+
+**Acceptatiecriteria**
+- [ ] Op `/onderdelen/[id]` een blok "Voorraadgeschiedenis" met de mutaties van dat
+      onderdeel, nieuwste bovenaan: datum en tijd, verandering (+10 / −1), oude → nieuwe
+      stand, reden in Nederlands label, en de notitie of werkorderreferentie als die er is.
+- [ ] Standaard de laatste 10, met "toon meer" of paginering. Een onderdeel dat een jaar
+      meeloopt krijgt honderden regels; de pagina mag daar niet traag van worden.
+- [ ] Nieuwe pagina `/voorraadmutaties` met alle wijzigingen over alle onderdelen,
+      nieuwste bovenaan, met de onderdeelnaam en een link ernaartoe.
+- [ ] Filteren op reden (levering, correctie, telling, verkoop, werkplaats, beginstand) en
+      op periode, met de keuze in de URL zodat de pagina deelbaar en herlaadbaar is.
+- [ ] Bij een mutatie met reden SALE of WORKSHOP is zichtbaar dat hij uit een verkoop
+      komt; link naar het onderdeel.
+- [ ] Bereikbaar vanuit de navigatie, maar niet in de mobiele onderbalk — die heeft al zes
+      items en dit is geen baliefunctie. Zet hem bijvoorbeeld op het dashboard of in de
+      zijbalk.
+- [ ] Lege toestand met het bestaande EmptyState-component.
+- [ ] Mobiel bruikbaar op 375px: geen brede tabel maar kaarten of een compacte lijst.
+- [ ] De queries aggregeren en pagineren in de database, niet door alles in Node te laden.
+- [ ] DTO-regel (SPEC §3 regel 1): geen Decimal of Date naar client components.
+
+---
+
 ## Feedback van review
 
 ### Reviewronde 1 — 2026-09-22 (PM)
@@ -902,3 +934,15 @@ Ze worden niet tussendoor gebouwd.
   tesseract.js in Node (alleen gebruikt tijdens het testen; de app draait in de browser)
   legt dat bestand van 5 MB in de projectroot. Eén regel in `.gitignore` voorkomt dat
   het ooit per ongeluk gecommit wordt.
+
+- (2026-10-01, bouwsessie T24) **Observaties, niet gebouwd:**
+  1. `formatDateTime` in `src/app/(app)/page.tsx` (dashboard, "Laatste verkopen") geeft
+     geen `timeZone` mee. Op een UTC-server (Vercel) staan de tijden daardoor 1-2 uur
+     naast de Amsterdamse tijd. De T24-weergaven gebruiken wel `Europe/Amsterdam`
+     (`src/lib/stock-mutation-format.ts`); het dashboard kan dat helpertje overnemen.
+  2. `/onderdelen/[id]` met een onbestaand id toont de 404-pagina maar antwoordt met HTTP 200,
+     doordat `(app)/loading.tsx` de respons al heeft gestart. Bestaand gedrag, niet nieuw.
+  3. Voor `StockMutation` ontbreekt een samengestelde index `(partId, createdAt)`. Bij dit
+     volume niet nodig; relevant zodra één onderdeel tienduizenden regels krijgt.
+  4. De notitie van een mutatie bevat soms een technische id ("mutatie cmup…", T19 "ongedaan
+     maken"). Leesbaar genoeg voor nu; een link naar de oorspronkelijke regel kan later.

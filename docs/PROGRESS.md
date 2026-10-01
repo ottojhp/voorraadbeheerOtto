@@ -6,6 +6,88 @@ in `docs/TASKS.md`.
 
 Nieuwste notitie bovenaan.
 
+## [T24] Voorraadgrootboek zichtbaar gemaakt — 2026-10-01
+**Status:** klaar voor review
+
+**Aangemaakte bestanden:** src/lib/queries/stock-mutations.ts,
+src/lib/stock-mutation-format.ts, src/components/StockMutationList.tsx,
+src/components/SimplePagination.tsx, src/app/(app)/voorraadmutaties/page.tsx,
+src/app/(app)/voorraadmutaties/search-params.ts,
+src/app/(app)/voorraadmutaties/MutationsFilters.tsx,
+src/lib/__tests__/stock-mutations.test.ts
+**Gewijzigde bestanden:** src/app/(app)/onderdelen/[id]/page.tsx, src/app/(app)/page.tsx,
+src/components/AppNav.tsx, src/components/icons.tsx, src/lib/labels.ts,
+src/lib/queries/types.ts, src/lib/__tests__/nav.test.ts, docs/TASKS.md (alleen status),
+docs/PROGRESS.md
+
+**Wat is gebouwd:**
+- Blok "Voorraadgeschiedenis" onderaan `/onderdelen/[id]`: de mutaties van dat onderdeel,
+  nieuwste bovenaan, 10 per pagina met "Nieuwere/Oudere" (`?page=N#voorraadgeschiedenis`,
+  het ankertje houdt de bezoeker bij het blok). Per regel: verandering (+10 / −1), oude →
+  nieuwe stand, reden als Nederlands label, notitie (bij werkplaatsverbruik is dat de
+  werkorderreferentie), tijdstip in Amsterdamse tijd. Lege toestand met `EmptyState`.
+- Nieuwe pagina `/voorraadmutaties`: alle mutaties over alle onderdelen, 25 per pagina,
+  met onderdeelnaam als link naar `/onderdelen/[id]`, SKU, en een kop "+965 stuks erbij ·
+  −209 stuks eraf" over ALLE gefilterde regels (niet alleen de getoonde pagina).
+- Filters in de URL: `reason` (DELIVERY, CORRECTION, COUNT, SALE, WORKSHOP, INITIAL),
+  `preset` (`today`, `7d`, `30d`, `90d`, `ytd`, `custom`), `from`/`to` (`YYYY-MM-DD`, bij
+  `custom`, een kant mag ontbreken) en `page`. Zonder `preset` geen periodefilter. Periode-
+  grenzen zijn Amsterdamse kalenderdagen (hergebruik van `@/lib/reporting-period`).
+  Ongeldige invoer geeft nooit een fout: het filter valt weg met een toonbare melding.
+- Regels met reden SALE/WORKSHOP of een `saleId` krijgen de badge "Uit verkoop"; de
+  onderdeelnaam is de link naar het onderdeel (er is geen verkoopdetailpagina om naar te
+  linken).
+- Navigatie: nieuw item "Voorraadmutaties" in de zijbalk, met `desktopOnly` zodat het NIET
+  in de mobiele onderbalk staat (blijft zes items). Op mobiel bereikbaar via een link onder
+  "Laatste verkopen" op het dashboard en via "Alle mutaties" in het blok op de detailpagina.
+- Mobiel: één lijst van kaartjes (badge met verandering links, tekst ernaast, tijdstip
+  eronder), geen tabel; vanaf `md` staan dezelfde elementen op één regel.
+
+**Keuzes en afwijkingen:**
+1. **Alles in de database.** `listStockMutations()` doet filter, `ORDER BY createdAt DESC,
+   id DESC` (de `id` als tiebreak: een verkoop schrijft meerdere regels met dezelfde
+   `now()`) en `skip/take` in SQL. De totalen zijn drie `aggregate`-queries over dezelfde
+   `where` (`buildStockMutationWhere`), dus telling en regels kunnen nooit een ander filter
+   gebruiken. Er wordt nooit meer dan één pagina rijen naar Node gehaald.
+2. **OFFSET in plaats van keyset-paginering.** OFFSET leest de eerste n rijen alsnog, maar
+   bij honderden tot enkele tienduizenden regels met een index op `createdAt` en `partId` is
+   dat onmerkbaar, en het geeft "pagina 3 van 12" en deelbare `?page=3`-links. Een
+   paginanummer voorbij het einde wordt teruggebracht naar de laatste pagina (daarom staat
+   de telling vóór de rijen) in plaats van een lege lijst.
+3. **Paginering in plaats van "toon meer"**: een onderdeel dat een jaar meeloopt blijft zo
+   op elke pagina 10 regels in de DOM houden.
+4. **Standaard geen periodefilter** op `/voorraadmutaties` (anders dan rapportages, die
+   30 dagen nemen): een grootboek is om terug te zoeken. "Vandaag" staat wel in de keuzelijst
+   (de vraag "wat is er vandaag gebeurd" was de aanleiding voor deze pagina).
+5. **Tijdstippen met vaste tijdzone Europe/Amsterdam** (`formatMutationDateTime`). De
+   server draait op UTC; zonder tijdzone staan de tijden 1-2 uur ernaast. Twee echte regels
+   van 00:12 Amsterdamse tijd (22:12 UTC) vallen daardoor goed op 1 oktober.
+6. Filterbalk is een client component dat navigeert met `router.push` (zelfde patroon als
+   `ReportsFilters`); alle pure URL-logica staat in `search-params.ts` zonder `"use client"`.
+   Een test bewaakt dat `MutationsFilters.tsx` alleen `MutationsFilters` exporteert.
+7. DTO: `StockMutationDTO` bevat alleen `number`/`string`/`boolean`/`null`, `createdAt` is een
+   ISO-string; er zit geen geld in het grootboek. Een test controleert dat het DTO een
+   JSON-ronde ongewijzigd overleeft.
+8. Een `-0` bij "0 stuks eraf" (`-(0)` in JS) is door een test gevonden en opgelost (`0 - x`).
+9. Schema, migraties en alle schrijfpaden zijn ongemoeid gelaten.
+
+**Bewust niet gedaan:** geen filter op onderdeel, merk of tekst op `/voorraadmutaties` (niet
+gevraagd); geen export; geen link naar een verkoopregel (bestaat niet); geen samengestelde
+index `(partId, createdAt)` (schemawijziging). Zie "Nieuwe wensen / observaties" in TASKS.md.
+
+**Verificatie:** `tsc --noEmit` 0 fouten; `vitest run` 499/499 (461 bestaand + 38 nieuw);
+`eslint .` schoon; `next build` ok (`/voorraadmutaties` 2,69 kB). Rendertest met
+sessiecookie uit `createSessionValue()`: `/`, `/onderdelen`, `/onderdelen/[id]`,
+`/voorraadmutaties`, `/verkoop`, `/leveranciers`, `/merken`, `/rapportages` allemaal 200.
+Filtertest tegen de lokale database (145 mutaties): elk filter geeft exact het aantal en de
+sommen van een onafhankelijke SQL-query (alles 145, SALE 58, WORKSHOP 30, INITIAL 40,
+CORRECTION 15, COUNT 1, DELIVERY 1; vandaag 19, 7d 23, 30d 44; SALE+30d 21; eigen periode
+30-9..30-9 = 1; WORKSHOP vanaf 25-9 = 3). Browser op 375px: geen horizontaal scrollen
+(`scrollWidth` 375 = `innerWidth`), onderbalk met zes items, filters via de UI getest.
+**Openstaand / risico's:** de unit-tests bewijzen de `where` (mock-Prisma), niet de SQL; dat
+bewijs is de echte test tegen de database hierboven. Bij tienduizenden regels per
+onderdeel/periode is een index `(partId, createdAt)` de volgende stap.
+
 ## [FIX] Leveranciersartikelnummer doorzoekbaar gemaakt — 2026-10-01
 **Status:** klaar voor review
 **Gewijzigde bestanden:** src/lib/queries/parts.ts,

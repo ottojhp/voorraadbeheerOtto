@@ -261,6 +261,16 @@ export default async function HomePage() {
               ))}
             </ul>
           )}
+          {/* Op mobiel staat Voorraadmutaties niet in de onderbalk (T24); vanaf hier
+              is het grootboek met één tik bereikbaar. */}
+          <div className="mt-3 text-right">
+            <Link
+              href="/voorraadmutaties"
+              className="inline-flex min-h-[44px] items-center text-sm font-medium text-blue-700 hover:underline"
+            >
+              Alle voorraadwijzigingen bekijken
+            </Link>
+          </div>
         </Card>
       </div>
 

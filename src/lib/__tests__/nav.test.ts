@@ -17,6 +17,7 @@ const HREFS = [
   "/verkoop",
   "/leveranciers",
   "/rapportages",
+  "/voorraadmutaties",
 ] as const;
 
 describe("pickActiveNavHref", () => {
@@ -39,6 +40,11 @@ describe("pickActiveNavHref", () => {
     expect(pickActiveNavHref("/onderdelen/nieuw", HREFS)).toBe("/onderdelen");
   });
 
+  it("markeert Voorraadmutaties op zijn eigen pad (T24), ook met filters in de URL", () => {
+    expect(pickActiveNavHref("/voorraadmutaties", HREFS)).toBe("/voorraadmutaties");
+    expect(matchesNavHref("/voorraadmutaties", "/onderdelen")).toBe(false);
+  });
+
   it("geeft null voor een pad buiten de navigatie", () => {
     expect(pickActiveNavHref("/merken", HREFS)).toBeNull();
     expect(pickActiveNavHref("/login", HREFS)).toBeNull();
@@ -53,6 +59,7 @@ describe("pickActiveNavHref", () => {
       "/verkoop",
       "/leveranciers/abc",
       "/rapportages",
+      "/voorraadmutaties",
     ]) {
       const active = pickActiveNavHref(pathname, HREFS);
       const allMatching = HREFS.filter((href) => matchesNavHref(pathname, href));

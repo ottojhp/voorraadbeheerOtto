@@ -15,7 +15,11 @@
  * ~21%. Marge en margepercentage staan altijd op excl.-basis.
  */
 
-import type { Category, ManualStockReason } from "@/lib/labels";
+import type {
+  Category,
+  ManualStockReason,
+  StockMutationReason,
+} from "@/lib/labels";
 
 /** Merk of leverancier, gereduceerd tot wat een overzicht of dropdown nodig heeft. */
 export interface NamedRefDTO {
@@ -138,6 +142,51 @@ export interface StockAdjustmentResultDTO {
   reason: ManualStockReason | null;
   /** Id van de geschreven grootboekregel; `null` als er niets geschreven is. */
   mutationId: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Voorraadgrootboek lezen (T24)
+// ---------------------------------------------------------------------------
+
+/**
+ * Eén regel uit het voorraadgrootboek (`StockMutation`), zoals de weergaven op
+ * `/onderdelen/[id]` en `/voorraadmutaties` hem nodig hebben. Alleen `number`,
+ * `string`, `boolean` en `null`: het tijdstip is een ISO-string (SPEC §3 regel 1).
+ */
+export interface StockMutationDTO {
+  id: string;
+  partId: string;
+  partName: string;
+  partSku: string;
+  /** Gearchiveerde onderdelen blijven in het grootboek staan (SPEC §3 regel 4). */
+  partIsArchived: boolean;
+  /** Verschil in stuks; positief bij bijboeken, negatief bij afboeken. Nooit 0. */
+  delta: number;
+  quantityBefore: number;
+  quantityAfter: number;
+  reason: StockMutationReason;
+  /** Vrije toelichting; bij werkplaatsverbruik de werkorderreferentie. */
+  note: string | null;
+  /**
+   * `true` als de regel uit een verkoop of werkplaatsverbruik komt: `saleId` is
+   * gevuld, of de reden is `SALE`/`WORKSHOP`.
+   */
+  fromSale: boolean;
+  /** ISO-string. */
+  createdAt: string;
+}
+
+/**
+ * Totalen over ALLE regels die aan het filter voldoen, niet alleen over de getoonde
+ * pagina. Worden in de database berekend.
+ */
+export interface StockMutationTotalsDTO {
+  /** Aantal regels. */
+  count: number;
+  /** Som van de positieve `delta`'s, altijd >= 0. */
+  added: number;
+  /** Som van de negatieve `delta`'s als POSITIEF getal (aantal stuks eraf), >= 0. */
+  removed: number;
 }
 
 // ---------------------------------------------------------------------------

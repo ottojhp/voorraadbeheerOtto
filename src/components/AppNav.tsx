@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import type { ComponentType } from "react";
 import {
   DashboardIcon,
+  HistoryIcon,
   ReportIcon,
   SaleIcon,
   ScanIcon,
@@ -26,6 +27,12 @@ interface NavItem {
    */
   shortLabel?: string;
   icon: ComponentType<IconProps>;
+  /**
+   * Alleen in de zijbalk, niet in de mobiele onderbalk. De onderbalk heeft al zes
+   * items en is voor wat aan de balie gebeurt; een grootboek is geen baliefunctie
+   * (T24). Op mobiel bereik je het via het dashboard en de onderdeeldetailpagina.
+   */
+  desktopOnly?: boolean;
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -47,9 +54,18 @@ const NAV_ITEMS: NavItem[] = [
     shortLabel: "Rapport.",
     icon: ReportIcon,
   },
+  {
+    href: "/voorraadmutaties",
+    label: "Voorraadmutaties",
+    icon: HistoryIcon,
+    desktopOnly: true,
+  },
 ];
 
+/** Wat de actieve-link-logica ziet: ALLE routes, ook die niet in de onderbalk staan. */
 const NAV_HREFS = NAV_ITEMS.map((item) => item.href);
+
+const MOBILE_NAV_ITEMS = NAV_ITEMS.filter((item) => !item.desktopOnly);
 
 /** Navigatielinks voor de zijbalk op tablet/desktop. */
 export function DesktopNavLinks() {
@@ -90,7 +106,7 @@ export function MobileBottomNav() {
       aria-label="Hoofdnavigatie"
       className="fixed inset-x-0 bottom-0 z-20 flex border-t border-gray-200 bg-white pb-[env(safe-area-inset-bottom)] md:hidden"
     >
-      {NAV_ITEMS.map(({ href, label, shortLabel, icon: Icon }) => {
+      {MOBILE_NAV_ITEMS.map(({ href, label, shortLabel, icon: Icon }) => {
         const active = href === activeHref;
         return (
           <Link

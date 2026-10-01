@@ -4,11 +4,19 @@ import { notFound } from "next/navigation";
 
 import { Badge } from "@/components/Badge";
 import { Card } from "@/components/Card";
+import { EmptyState } from "@/components/EmptyState";
 import { PageHeader } from "@/components/PageHeader";
 import { MarginBasisNote, PriceWithVat } from "@/components/PriceWithVat";
+import { SimplePagination } from "@/components/SimplePagination";
+import { StockMutationList } from "@/components/StockMutationList";
+import { HistoryIcon } from "@/components/icons";
 import { CATEGORY_LABELS } from "@/lib/labels";
 import { formatEuro } from "@/lib/money";
 import { getPartById } from "@/lib/queries/parts";
+import {
+  PART_HISTORY_PAGE_SIZE,
+  listStockMutations,
+} from "@/lib/queries/stock-mutations";
 
 import { archivePartAction } from "../actions";
 import { ArchivePartButton } from "../ArchivePartButton";
@@ -16,7 +24,7 @@ import { StockStepper } from "../StockStepper";
 
 interface PageProps {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ opgeslagen?: string }>;
+  searchParams: Promise<{ opgeslagen?: string; page?: string | string[] }>;
 }
 
 export async function generateMetadata({
@@ -54,8 +62,18 @@ export default async function OnderdeelDetailPagina({
   searchParams,
 }: PageProps) {
   const { id } = await params;
-  const { opgeslagen } = await searchParams;
-  const part = await getPartById(id);
+  const { opgeslagen, page: pageParam } = await searchParams;
+  // Het grootboek wordt parallel met het onderdeel opgehaald; voor een onbekend id is
+  // het resultaat simpelweg leeg en volgt hieronder `notFound()`.
+  const historyPage = Number(Array.isArray(pageParam) ? pageParam[0] : pageParam);
+  const [part, history] = await Promise.all([
+    getPartById(id),
+    listStockMutations({
+      partId: id,
+      page: Number.isInteger(historyPage) && historyPage >= 1 ? historyPage : 1,
+      pageSize: PART_HISTORY_PAGE_SIZE,
+    }),
+  ]);
 
   if (!part) {
     notFound();
@@ -226,6 +244,52 @@ export default async function OnderdeelDetailPagina({
           </dl>
         </Card>
       </div>
+
+      {/* Voorraadgeschiedenis (T24): de laatste 10 grootboekregels van dit
+          onderdeel, met "Vorige/Volgende" voor de rest. Het ankertje houdt de
+          bezoeker bij het blok na het doorbladeren. */}
+      <section id="voorraadgeschiedenis" className="mt-6 scroll-mt-4">
+        <Card
+          title="Voorraadgeschiedenis"
+          actions={
+            <Link
+              href="/voorraadmutaties"
+              className="text-sm font-medium text-blue-700 hover:underline"
+            >
+              Alle mutaties
+            </Link>
+          }
+        >
+          {history.items.length === 0 ? (
+            <EmptyState
+              icon={<HistoryIcon className="h-10 w-10 text-gray-400" />}
+              title="Nog geen voorraadwijzigingen"
+              description="Zodra de voorraad van dit onderdeel verandert, staat de wijziging hier."
+            />
+          ) : (
+            <>
+              <StockMutationList
+                items={history.items}
+                showPart={false}
+                ariaLabel={`Voorraadgeschiedenis van ${part.name}`}
+              />
+              <SimplePagination
+                page={history.page}
+                pageCount={history.pageCount}
+                total={history.total}
+                pageSize={history.pageSize}
+                noun="mutaties"
+                ariaLabel="Paginering voorraadgeschiedenis"
+                prevLabel="Nieuwere"
+                nextLabel="Oudere"
+                hrefFor={(target) =>
+                  `/onderdelen/${part.id}${target > 1 ? `?page=${target}` : ""}#voorraadgeschiedenis`
+                }
+              />
+            </>
+          )}
+        </Card>
+      </section>
     </div>
   );
 }

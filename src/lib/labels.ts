@@ -65,6 +65,21 @@ export const STOCK_MUTATION_REASON_LABELS: Record<StockMutationReason, string> =
 };
 
 /**
+ * Alle redenen in de volgorde van het filter op `/voorraadmutaties` (T24): levering,
+ * correctie, telling, verkoop, werkplaats, beginstand. Anders dan
+ * `MANUAL_STOCK_REASON_OPTIONS` zijn hier ook de redenen bij die de app zelf zet,
+ * want wie het grootboek leest wil ook op verkoop en beginstand kunnen filteren.
+ */
+export const STOCK_MUTATION_REASON_OPTIONS: StockMutationReason[] = [
+  "DELIVERY",
+  "CORRECTION",
+  "COUNT",
+  "SALE",
+  "WORKSHOP",
+  "INITIAL",
+];
+
+/**
  * De redenen die de gebruiker zélf mag kiezen bij een handmatige voorraadwijziging
  * (T19). `SALE` en `WORKSHOP` horen bij een verkoopregel en `INITIAL` bij het
  * aanleggen van een onderdeel; die zijn hier bewust niet kiesbaar, want dan zou het
