@@ -4,9 +4,10 @@
  * Dit is de enige plek waar een verkoop wordt weggeschreven. Twee bindende regels uit
  * SPEC §3 zitten hier ingebakken:
  *
- * - regel 5: voorraad verlagen en de `Sale` loggen gebeurt in ÉÉN
- *   `prisma.$transaction`. Er mag geen verkoop bestaan zonder voorraadmutatie en
- *   andersom.
+ * - regel 5: voorraad verlagen, de `Sale` loggen en de `StockMutation` (het
+ *   voorraadgrootboek, SPEC §4) schrijven gebeurt in ÉÉN `prisma.$transaction`. Er
+ *   mag geen verkoop bestaan zonder voorraadmutatie en andersom, en geen
+ *   voorraadwijziging zonder grootboekregel.
  * - regel 6: negatieve voorraad is verboden. De controle staat server-side BINNEN de
  *   transactie, niet alleen in de UI.
  *
@@ -17,11 +18,11 @@
  * Server-only: importeer dit bestand niet in een client component.
  */
 
-import { Prisma } from "@prisma/client";
+import { Prisma, StockMutationReason } from "@prisma/client";
 
 import { prisma } from "@/lib/db";
 import type { SaleChannel } from "@/lib/labels";
-import { priceWithVat } from "@/lib/money";
+import { calcLineTotal, priceExclVat } from "@/lib/money";
 import { saleSchema, type SaleInput } from "@/lib/validation/sales";
 
 // ---------------------------------------------------------------------------
@@ -106,13 +107,18 @@ export interface SaleResultDTO {
   quantity: number;
   channel: SaleChannel;
   reference: string | null;
-  /** Prijs per stuk, EXCL. btw, zoals vastgelegd op het moment van verkoop. */
-  salePriceAtSale: number;
+  /**
+   * Prijs per stuk INCL. btw, zoals vastgelegd op het moment van verkoop: exact het
+   * bedrag dat de klant per stuk betaalde.
+   */
+  salePriceInclAtSale: number;
   /** Btw-percentage op het moment van verkoop, bv. `21`. */
   vatRateAtSale: number;
-  /** `quantity * salePriceAtSale`, excl. btw. */
+  /** Afgeleid uit `salePriceInclAtSale`; de excl.-basis voor marge en rapportages. */
+  salePriceExclAtSale: number;
+  /** `quantity * salePriceExclAtSale`, dus het afgeleide excl.-regeltotaal. */
   lineTotalExclVat: number;
-  /** Afgeleid, alleen voor weergave (SPEC §3 regel 0). */
+  /** `quantity * salePriceInclAtSale`: het bedrag dat werkelijk betaald is. */
   lineTotalInclVat: number;
   /** De voorraadstand NA deze verkoop, zodat de balie die meteen ziet. */
   newStockQuantity: number;
@@ -130,8 +136,11 @@ export interface RecentSaleDTO {
   quantity: number;
   channel: SaleChannel;
   reference: string | null;
-  salePriceAtSale: number;
+  /** Per stuk, INCL. btw, historisch vastgelegd. */
+  salePriceInclAtSale: number;
   vatRateAtSale: number;
+  /** Afgeleid uit `salePriceInclAtSale`. */
+  salePriceExclAtSale: number;
   lineTotalExclVat: number;
   lineTotalInclVat: number;
   soldAt: string;
@@ -158,8 +167,8 @@ const PART_FOR_SALE_SELECT = {
   name: true,
   sku: true,
   stockQuantity: true,
-  purchasePrice: true,
-  salePrice: true,
+  purchasePriceExcl: true,
+  salePriceIncl: true,
   vatRate: true,
   archivedAt: true,
   brand: { select: { name: true } },
@@ -183,7 +192,13 @@ export interface RegisterSaleResult {
  *     genoeg voorraad?) — dit levert nette, specifieke meldingen op;
  *  2. de voorraad verlagen met een VOORWAARDELIJKE update;
  *  3. de `Sale` aanmaken met de prijzen zoals ze op dít moment zijn;
- *  4. de nieuwe voorraadstand teruglezen voor de bevestiging.
+ *  4. de nieuwe voorraadstand teruglezen — voor de bevestiging én als basis voor de
+ *     grootboekregel;
+ *  5. de `StockMutation` schrijven (reason `SALE` of `WORKSHOP`, `delta` negatief).
+ *
+ * Alle vijf stappen zitten in dezelfde transactie: gaat stap 5 mis, dan draait ook de
+ * voorraadverlaging en de verkoopregel terug (SPEC §4: een grootboek met gaten is
+ * erger dan geen grootboek).
  *
  * ### Waarom stap 2 een `updateMany` met voorwaarden in de WHERE is
  *
@@ -292,14 +307,16 @@ export async function registerSale(input: SaleInput): Promise<RegisterSaleResult
     }
 
     // Stap 3 — de verkoopregel. SPEC §3 regel 3: verkoop- én inkoopprijs en het
-    // btw-tarief worden historisch vastgelegd (excl. btw), zodat de marge
-    // reconstrueerbaar blijft als de prijzen later wijzigen.
+    // btw-tarief worden historisch vastgelegd, zodat de marge reconstrueerbaar
+    // blijft als de prijzen later wijzigen. De verkoopprijs gaat INCL. btw mee (het
+    // bedrag dat de klant betaalde), de inkoopprijs EXCL. — precies zoals ze op het
+    // onderdeel staan, dus zonder tussentijdse omrekening die centen kan kosten.
     const sale = await tx.sale.create({
       data: {
         partId: part.id,
         quantity,
-        salePriceAtSale: part.salePrice,
-        purchasePriceAtSale: part.purchasePrice,
+        salePriceInclAtSale: part.salePriceIncl,
+        purchasePriceExclAtSale: part.purchasePriceExcl,
         vatRateAtSale: part.vatRate,
         channel,
         reference,
@@ -315,9 +332,74 @@ export async function registerSale(input: SaleInput): Promise<RegisterSaleResult
       select: { stockQuantity: true },
     });
 
-    const salePrice = toNumber(part.salePrice);
+    if (!after) {
+      // Kan in de praktijk niet: de UPDATE in stap 2 raakte deze rij nog en houdt er
+      // tot het einde van de transactie een slot op, en een FK-restrict verhindert
+      // het verwijderen. Toch expliciet i.p.v. een fallback-berekening: een gokje
+      // hier zou een grootboekregel met verzonnen standen opleveren. Gooien draait
+      // alles terug.
+      throw new Error(
+        `Voorraadstand van onderdeel ${partId} was na de update niet leesbaar; verkoop teruggedraaid.`,
+      );
+    }
+
+    // Stap 5 — de grootboekregel (SPEC §4, T22).
+    //
+    // ### Hoe `quantityBefore` hier komt zonder de race te herintroduceren
+    //
+    // De stand vóór de mutatie wordt NIET met een extra SELECT vóór de update
+    // opgehaald en ook niet uit stap 1 overgenomen: dat zou precies de
+    // lezen-dan-schrijven-race terugbrengen die de voorwaardelijke `UPDATE` hierboven
+    // afvangt (stap 1 leest zonder slot, dus die waarde kan al verouderd zijn zodra
+    // hij binnen is).
+    //
+    // In plaats daarvan wordt hij AFGELEID uit de stand ná de update. Dat mag hier om
+    // twee redenen:
+    //
+    //  1. de `UPDATE` van stap 2 nam een rijslot op deze `Part`-rij dat Postgres tot
+    //     het commit-moment vasthoudt. Geen andere transactie kan de voorraad tussen
+    //     stap 2 en nu wijzigen — `after.stockQuantity` is dus de werkelijke stand ná
+    //     precies onze eigen mutatie, en niet een momentopname die alweer achterhaald
+    //     kan zijn;
+    //  2. de update was RELATIEF (`decrement: quantity`), dus onze mutatie is exact
+    //     `-quantity`. Daarmee geldt per definitie
+    //     `quantityBefore = quantityAfter + quantity`, ongeacht wat stap 1 las. Een
+    //     levering die tussen stap 1 en stap 2 binnenkwam vervuilt deze regel dus
+    //     niet; die hoort een eigen `DELIVERY`-regel te krijgen.
+    //
+    // De database controleert het resultaat nog een keer met de CHECK-constraint
+    // `quantityAfter = quantityBefore + delta`.
+    const quantityAfter = after.stockQuantity;
+    const quantityBefore = quantityAfter + quantity;
+
+    await tx.stockMutation.create({
+      data: {
+        partId: part.id,
+        delta: -quantity,
+        quantityBefore,
+        quantityAfter,
+        // Werkplaatsverbruik krijgt zijn eigen reden, zodat het grootboek zonder
+        // join naar `Sale` te lezen is — net als in de seed.
+        reason:
+          channel === "WORKSHOP"
+            ? StockMutationReason.WORKSHOP
+            : StockMutationReason.SALE,
+        // Vrije toelichting; bij werkplaatsverbruik de werkorderreferentie. Geen
+        // persoonsgegevens (AVG) — het Zod-schema trimt en laat de balie hier niets
+        // invullen.
+        note: reference,
+        saleId: sale.id,
+      },
+      select: { id: true },
+    });
+
+    const salePriceIncl = toNumber(part.salePriceIncl);
     const vatRate = toNumber(part.vatRate);
-    const lineTotalExclVat = salePrice * quantity;
+    const salePriceExcl = priceExclVat(salePriceIncl, vatRate);
+    // Het incl.-totaal is een exacte vermenigvuldiging van het betaalde bedrag; het
+    // excl.-totaal is afgeleid en dus een stuurgetal (SPEC §3 regel 0).
+    const lineTotalExclVat = calcLineTotal(salePriceExcl, quantity);
+    const lineTotalInclVat = calcLineTotal(salePriceIncl, quantity);
 
     return {
       sale: {
@@ -329,11 +411,12 @@ export async function registerSale(input: SaleInput): Promise<RegisterSaleResult
         quantity,
         channel: channel as SaleChannel,
         reference,
-        salePriceAtSale: salePrice,
+        salePriceInclAtSale: salePriceIncl,
         vatRateAtSale: vatRate,
+        salePriceExclAtSale: salePriceExcl,
         lineTotalExclVat,
-        lineTotalInclVat: priceWithVat(lineTotalExclVat, vatRate),
-        newStockQuantity: after?.stockQuantity ?? part.stockQuantity - quantity,
+        lineTotalInclVat,
+        newStockQuantity: quantityAfter,
         soldAt: sale.soldAt.toISOString(),
       },
     };
@@ -367,7 +450,7 @@ export async function listRecentSales(
       id: true,
       partId: true,
       quantity: true,
-      salePriceAtSale: true,
+      salePriceInclAtSale: true,
       vatRateAtSale: true,
       channel: true,
       reference: true,
@@ -379,9 +462,9 @@ export async function listRecentSales(
   });
 
   return rows.map((row) => {
-    const salePriceAtSale = toNumber(row.salePriceAtSale);
+    const salePriceInclAtSale = toNumber(row.salePriceInclAtSale);
     const vatRateAtSale = toNumber(row.vatRateAtSale);
-    const lineTotalExclVat = salePriceAtSale * row.quantity;
+    const salePriceExclAtSale = priceExclVat(salePriceInclAtSale, vatRateAtSale);
 
     return {
       id: row.id,
@@ -392,10 +475,11 @@ export async function listRecentSales(
       quantity: row.quantity,
       channel: row.channel as SaleChannel,
       reference: row.reference,
-      salePriceAtSale,
+      salePriceInclAtSale,
       vatRateAtSale,
-      lineTotalExclVat,
-      lineTotalInclVat: priceWithVat(lineTotalExclVat, vatRateAtSale),
+      salePriceExclAtSale,
+      lineTotalExclVat: calcLineTotal(salePriceExclAtSale, row.quantity),
+      lineTotalInclVat: calcLineTotal(salePriceInclAtSale, row.quantity),
       soldAt: row.soldAt.toISOString(),
     };
   });

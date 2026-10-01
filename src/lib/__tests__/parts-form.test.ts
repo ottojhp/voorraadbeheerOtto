@@ -19,8 +19,8 @@ function validInput(overrides: Record<string, string> = {}) {
     description: "",
     fitsModels: "",
     location: "",
-    purchasePrice: "10,00",
-    salePrice: "19,99",
+    purchasePriceExcl: "10,00",
+    salePriceIncl: "19,99",
     vatRate: "21",
     stockQuantity: "5",
     minStock: "2",
@@ -63,23 +63,23 @@ describe("partFormSchema", () => {
 
   it("weigert een negatieve inkoopprijs", () => {
     const result = partFormSchema.safeParse(
-      validInput({ purchasePrice: "-5,00" }),
+      validInput({ purchasePriceExcl: "-5,00" }),
     );
     expect(result.success).toBe(false);
   });
 
   it("weigert een negatieve verkoopprijs", () => {
-    const result = partFormSchema.safeParse(validInput({ salePrice: "-1" }));
+    const result = partFormSchema.safeParse(validInput({ salePriceIncl: "-1" }));
     expect(result.success).toBe(false);
   });
 
   it("weigert meer dan 2 decimalen bij een prijs", () => {
     const result = partFormSchema.safeParse(
-      validInput({ salePrice: "19,999" }),
+      validInput({ salePriceIncl: "19,999" }),
     );
     expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.error.flatten().fieldErrors.salePrice?.[0]).toContain(
+      expect(result.error.flatten().fieldErrors.salePriceIncl?.[0]).toContain(
         "2 decimalen",
       );
     }
@@ -87,21 +87,112 @@ describe("partFormSchema", () => {
 
   it('accepteert "12,50" (komma) als bedrag en normaliseert naar 12.5', () => {
     const result = partFormSchema.safeParse(
-      validInput({ purchasePrice: "12,50" }),
+      validInput({ purchasePriceExcl: "12,50" }),
     );
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.purchasePrice).toBe(12.5);
+      expect(result.data.purchasePriceExcl).toBe(12.5);
     }
   });
 
   it('accepteert "12.50" (punt) als bedrag', () => {
     const result = partFormSchema.safeParse(
-      validInput({ purchasePrice: "12.50" }),
+      validInput({ purchasePriceExcl: "12.50" }),
     );
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.purchasePrice).toBe(12.5);
+      expect(result.data.purchasePriceExcl).toBe(12.5);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // De incl./excl.-schakelaar bij de inkoopprijs (T18)
+  // -------------------------------------------------------------------------
+
+  it("slaat het ingetypte bedrag ongewijzigd op bij mode 'excl'", () => {
+    const result = partFormSchema.safeParse(
+      validInput({ purchasePriceExcl: "10,00", purchasePriceVatMode: "excl" }),
+    );
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.purchasePriceExcl).toBe(10);
+    }
+  });
+
+  it("rekent bij mode 'incl' server-side terug naar excl. btw", () => {
+    // 12,10 incl. bij 21% is exact 10,00 excl.
+    const result = partFormSchema.safeParse(
+      validInput({
+        purchasePriceExcl: "12,10",
+        purchasePriceVatMode: "incl",
+        vatRate: "21",
+      }),
+    );
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.purchasePriceExcl).toBe(10);
+    }
+  });
+
+  it("gebruikt bij het terugrekenen het ingevulde btw-tarief, niet 21", () => {
+    // 109,00 incl. bij 9% btw is 100,00 excl. Zou het schema hier 21% pakken, dan
+    // kwam er 90,08 uit en was de inkoopprijs ruim 10% te laag.
+    const result = partFormSchema.safeParse(
+      validInput({
+        purchasePriceExcl: "109,00",
+        purchasePriceVatMode: "incl",
+        vatRate: "9",
+      }),
+    );
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.purchasePriceExcl).toBe(100);
+    }
+  });
+
+  it("behandelt een ontbrekende keuze als 'excl' (de veilige kant)", () => {
+    const input = validInput();
+    expect("purchasePriceVatMode" in input).toBe(false);
+    const result = partFormSchema.safeParse(input);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      // Ongewijzigd: bij 'excl' wordt er niets omgerekend.
+      expect(result.data.purchasePriceExcl).toBe(10);
+    }
+  });
+
+  it("behandelt een lege keuze als 'excl'", () => {
+    const result = partFormSchema.safeParse(
+      validInput({ purchasePriceExcl: "10,00", purchasePriceVatMode: "" }),
+    );
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.purchasePriceExcl).toBe(10);
+    }
+  });
+
+  it("weigert een onbekende keuze in plaats van die als 'excl' te behandelen", () => {
+    const result = partFormSchema.safeParse(
+      validInput({ purchasePriceVatMode: "inclusief" }),
+    );
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(
+        result.error.flatten().fieldErrors.purchasePriceVatMode?.[0],
+      ).toContain("inclusief of exclusief btw");
+    }
+  });
+
+  it("laat de verkoopprijs ongemoeid: die wordt altijd incl. btw opgeslagen", () => {
+    // De drie bedragen uit T18 waarbij de oude excl.-opslag een cent verloor.
+    for (const bedrag of ["10,00", "19,99", "24,95"]) {
+      const result = partFormSchema.safeParse(
+        validInput({ salePriceIncl: bedrag, purchasePriceVatMode: "incl" }),
+      );
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.salePriceIncl).toBe(Number(bedrag.replace(",", ".")));
+      }
     }
   });
 

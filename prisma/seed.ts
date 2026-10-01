@@ -2,8 +2,19 @@
  * Seed-data voor het voorraadbeheer (T03, zie docs/TASKS.md).
  *
  * Draait via `tsx prisma/seed.ts` (of `npm run db:seed`). Idempotent: ruimt eerst
- * bestaande data op in de volgorde die de foreign keys voorschrijven (Sale → Part →
- * Supplier/Brand), zodat twee keer draaien geen duplicaten en geen crash geeft.
+ * bestaande data op in de volgorde die de foreign keys voorschrijven
+ * (StockMutation → Sale → Part → Supplier/Brand), zodat twee keer draaien geen
+ * duplicaten en geen crash geeft.
+ *
+ * Prijzen volgen datamodel v2 (SPEC §3 regel 0): `salePriceIncl` is de prijs op het
+ * prijskaartje (INCLUSIEF btw), `purchasePriceExcl` de prijs op de leveranciersfactuur
+ * (EXCLUSIEF btw).
+ *
+ * De seed levert ook een CONSISTENT VOORRAADGROOTBOEK op (`StockMutation`, T17): per
+ * onderdeel één `INITIAL`-regel met de beginstand en per verkoop één `SALE`- of
+ * `WORKSHOP`-regel, chronologisch, met kloppende `quantityBefore`/`quantityAfter`. De
+ * laatste `quantityAfter` per onderdeel is exact de `stockQuantity` die op het
+ * onderdeel staat; de seed rekent dat na en faalt hard als het niet klopt.
  *
  * Alle willekeur komt uit één seeded pseudo-random generator (mulberry32), niet uit
  * een extern pakket zoals faker: dezelfde run produceert dezelfde verdeling van
@@ -12,7 +23,12 @@
  * onderdelen op welke relatieve dag verkocht worden ligt door de vaste seed vast.
  */
 
-import { PrismaClient, Category, SaleChannel } from "@prisma/client";
+import {
+  PrismaClient,
+  Category,
+  SaleChannel,
+  StockMutationReason,
+} from "@prisma/client";
 
 const prisma = new PrismaClient();
 
@@ -32,6 +48,13 @@ function mulberry32(seed: number): () => number {
 }
 
 const SEED = 20260921;
+
+/**
+ * Hoeveel dagen terug de INITIAL-mutaties van het grootboek worden gedateerd. Ligt
+ * bewust vóór het verkoopvenster van 90 dagen, zodat elke verkoopmutatie ná de
+ * beginstand valt.
+ */
+const LEDGER_START_DAYS_AGO = 95;
 const rand = mulberry32(SEED);
 
 /** Geheel getal tussen min en max, beide inclusief. */
@@ -131,8 +154,12 @@ type PartSeed = {
   brand: (typeof BRAND_NAMES)[number] | null;
   sku: string;
   hasBarcode: boolean;
-  purchasePrice: number;
-  salePrice: number;
+  /** Artikelnummer van de leverancier/fabrikant; niet elk artikel heeft er een. */
+  supplierArticleNumber?: string;
+  /** Inkoopprijs EXCL. btw, zoals op de leveranciersfactuur. */
+  purchasePriceExcl: number;
+  /** Verkoopprijs INCL. btw: het bedrag op het prijskaartje (SPEC §3 regel 0). */
+  salePriceIncl: number;
   vatRate: number;
   minStock: number;
   supplierIndex: number | null;
@@ -150,8 +177,9 @@ const PARTS: PartSeed[] = [
     brand: "Vespa",
     sku: "SCO-VES-001",
     hasBarcode: true,
-    purchasePrice: 12.5,
-    salePrice: 24.95,
+    supplierArticleNumber: "PIA-4T-8412",
+    purchasePriceExcl: 12.5,
+    salePriceIncl: 29.95,
     vatRate: 21,
     minStock: 8,
     supplierIndex: 0,
@@ -165,8 +193,9 @@ const PARTS: PartSeed[] = [
     brand: "Piaggio",
     sku: "SCO-PIA-002",
     hasBarcode: true,
-    purchasePrice: 11.0,
-    salePrice: 22.5,
+    supplierArticleNumber: "PIA-4T-8455",
+    purchasePriceExcl: 11.0,
+    salePriceIncl: 26.95,
     vatRate: 21,
     minStock: 6,
     supplierIndex: 0,
@@ -180,8 +209,9 @@ const PARTS: PartSeed[] = [
     brand: "Peugeot",
     sku: "SCO-PEU-003",
     hasBarcode: true,
-    purchasePrice: 8.75,
-    salePrice: 17.95,
+    supplierArticleNumber: "PEU-AF-72310",
+    purchasePriceExcl: 8.75,
+    salePriceIncl: 21.95,
     vatRate: 21,
     minStock: 5,
     supplierIndex: 0,
@@ -194,8 +224,9 @@ const PARTS: PartSeed[] = [
     brand: "Kymco",
     sku: "SCO-KYM-004",
     hasBarcode: true,
-    purchasePrice: 18.4,
-    salePrice: 34.5,
+    supplierArticleNumber: "KYM-VB-11907",
+    purchasePriceExcl: 18.4,
+    salePriceIncl: 41.95,
     vatRate: 21,
     minStock: 6,
     supplierIndex: 0,
@@ -209,8 +240,9 @@ const PARTS: PartSeed[] = [
     brand: "SYM",
     sku: "SCO-SYM-005",
     hasBarcode: true,
-    purchasePrice: 9.9,
-    salePrice: 19.5,
+    supplierArticleNumber: "SYM-RL-3320",
+    purchasePriceExcl: 9.9,
+    salePriceIncl: 23.95,
     vatRate: 21,
     minStock: 4,
     supplierIndex: 0,
@@ -223,8 +255,8 @@ const PARTS: PartSeed[] = [
     brand: "AGM",
     sku: "SCO-AGM-006",
     hasBarcode: true,
-    purchasePrice: 6.25,
-    salePrice: 13.5,
+    purchasePriceExcl: 6.25,
+    salePriceIncl: 16.5,
     vatRate: 21,
     minStock: 5,
     supplierIndex: 0,
@@ -236,8 +268,9 @@ const PARTS: PartSeed[] = [
     brand: "Rieju",
     sku: "SCO-RIE-007",
     hasBarcode: true,
-    purchasePrice: 28.0,
-    salePrice: 52.5,
+    supplierArticleNumber: "NZ-TYR-10080-16",
+    purchasePriceExcl: 28.0,
+    salePriceIncl: 63.95,
     vatRate: 21,
     minStock: 4,
     supplierIndex: 1,
@@ -253,8 +286,9 @@ const PARTS: PartSeed[] = [
     brand: "Brixton",
     sku: "MOT-BRI-008",
     hasBarcode: true,
-    purchasePrice: 14.5,
-    salePrice: 27.95,
+    supplierArticleNumber: "BRX-CLS-4471",
+    purchasePriceExcl: 14.5,
+    salePriceIncl: 33.95,
     vatRate: 21,
     minStock: 4,
     supplierIndex: 0,
@@ -267,8 +301,9 @@ const PARTS: PartSeed[] = [
     brand: "MT",
     sku: "MOT-MT-009",
     hasBarcode: true,
-    purchasePrice: 3.75,
-    salePrice: 8.5,
+    supplierArticleNumber: "NGK-CR7HSA",
+    purchasePriceExcl: 3.75,
+    salePriceIncl: 10.5,
     vatRate: 21,
     minStock: 10,
     supplierIndex: 0,
@@ -281,8 +316,9 @@ const PARTS: PartSeed[] = [
     brand: "Benelli",
     sku: "MOT-BEN-010",
     hasBarcode: true,
-    purchasePrice: 31.0,
-    salePrice: 58.5,
+    supplierArticleNumber: "NZ-TYR-12070-12",
+    purchasePriceExcl: 31.0,
+    salePriceIncl: 69.95,
     vatRate: 21,
     minStock: 3,
     supplierIndex: 1,
@@ -295,8 +331,9 @@ const PARTS: PartSeed[] = [
     brand: "Hanway",
     sku: "MOT-HAN-011",
     hasBarcode: true,
-    purchasePrice: 42.0,
-    salePrice: 79.5,
+    supplierArticleNumber: "HW-CHK-125-300",
+    purchasePriceExcl: 42.0,
+    salePriceIncl: 95.95,
     vatRate: 21,
     minStock: 3,
     supplierIndex: 0,
@@ -309,8 +346,9 @@ const PARTS: PartSeed[] = [
     brand: "Aprilia",
     sku: "MOT-APR-012",
     hasBarcode: true,
-    purchasePrice: 55.0,
-    salePrice: 99.0,
+    supplierArticleNumber: "APR-SM-58021",
+    purchasePriceExcl: 55.0,
+    salePriceIncl: 119.95,
     vatRate: 21,
     minStock: 2,
     supplierIndex: 0,
@@ -325,8 +363,9 @@ const PARTS: PartSeed[] = [
     brand: "NIU",
     sku: "EBK-NIU-013",
     hasBarcode: true,
-    purchasePrice: 145.0,
-    salePrice: 249.0,
+    supplierArticleNumber: "NIU-BAT-12L-04",
+    purchasePriceExcl: 145.0,
+    salePriceIncl: 299,
     vatRate: 21,
     minStock: 3,
     supplierIndex: 3,
@@ -340,8 +379,9 @@ const PARTS: PartSeed[] = [
     brand: "Super Soco",
     sku: "EBK-SSO-014",
     hasBarcode: true,
-    purchasePrice: 89.0,
-    salePrice: 159.0,
+    supplierArticleNumber: "SSO-CTRL-72V-02",
+    purchasePriceExcl: 89.0,
+    salePriceIncl: 192.5,
     vatRate: 21,
     minStock: 2,
     supplierIndex: 3,
@@ -354,8 +394,9 @@ const PARTS: PartSeed[] = [
     brand: "Segway",
     sku: "EBK-SEG-015",
     hasBarcode: true,
-    purchasePrice: 22.0,
-    salePrice: 39.95,
+    supplierArticleNumber: "SEG-CHG-A21",
+    purchasePriceExcl: 22.0,
+    salePriceIncl: 47.95,
     vatRate: 21,
     minStock: 4,
     supplierIndex: 3,
@@ -368,8 +409,9 @@ const PARTS: PartSeed[] = [
     brand: "Knaap",
     sku: "EBK-KNA-016",
     hasBarcode: true,
-    purchasePrice: 165.0,
-    salePrice: 289.0,
+    supplierArticleNumber: "KNP-MM-250W",
+    purchasePriceExcl: 165.0,
+    salePriceIncl: 349,
     vatRate: 21,
     minStock: 2,
     supplierIndex: 3,
@@ -382,8 +424,9 @@ const PARTS: PartSeed[] = [
     brand: "Phatfour",
     sku: "EBK-PHF-017",
     hasBarcode: true,
-    purchasePrice: 34.0,
-    salePrice: 64.5,
+    supplierArticleNumber: "PHF-DSP-FLX2",
+    purchasePriceExcl: 34.0,
+    salePriceIncl: 77.95,
     vatRate: 21,
     minStock: 3,
     supplierIndex: 3,
@@ -398,8 +441,9 @@ const PARTS: PartSeed[] = [
     brand: "Riva",
     sku: "MOB-RIV-018",
     hasBarcode: true,
-    purchasePrice: 98.0,
-    salePrice: 175.0,
+    supplierArticleNumber: "RIV-BAT-24V-33",
+    purchasePriceExcl: 98.0,
+    salePriceIncl: 209,
     vatRate: 21,
     minStock: 2,
     supplierIndex: 3,
@@ -412,8 +456,8 @@ const PARTS: PartSeed[] = [
     brand: "Boxer",
     sku: "MOB-BOX-019",
     hasBarcode: true,
-    purchasePrice: 19.5,
-    salePrice: 36.95,
+    purchasePriceExcl: 19.5,
+    salePriceIncl: 44.95,
     vatRate: 21,
     minStock: 4,
     supplierIndex: 3,
@@ -425,8 +469,9 @@ const PARTS: PartSeed[] = [
     brand: "Art",
     sku: "MOB-ART-020",
     hasBarcode: true,
-    purchasePrice: 7.5,
-    salePrice: 15.95,
+    supplierArticleNumber: "ART-SHS-0091",
+    purchasePriceExcl: 7.5,
+    salePriceIncl: 19.5,
     vatRate: 21,
     minStock: 4,
     supplierIndex: 3,
@@ -438,8 +483,9 @@ const PARTS: PartSeed[] = [
     brand: "SYM",
     sku: "MOB-SYM-021",
     hasBarcode: true,
-    purchasePrice: 11.0,
-    salePrice: 21.5,
+    supplierArticleNumber: "SYM-FP-2288",
+    purchasePriceExcl: 11.0,
+    salePriceIncl: 25.95,
     vatRate: 21,
     minStock: 3,
     supplierIndex: 3,
@@ -453,8 +499,9 @@ const PARTS: PartSeed[] = [
     brand: "Shark",
     sku: "HEL-SHA-022",
     hasBarcode: true,
-    purchasePrice: 95.0,
-    salePrice: 179.0,
+    supplierArticleNumber: "SHK-D-SKWAL-M",
+    purchasePriceExcl: 95.0,
+    salePriceIncl: 215,
     vatRate: 21,
     minStock: 3,
     supplierIndex: 2,
@@ -467,8 +514,9 @@ const PARTS: PartSeed[] = [
     brand: "Roof",
     sku: "HEL-ROO-023",
     hasBarcode: true,
-    purchasePrice: 72.0,
-    salePrice: 139.0,
+    supplierArticleNumber: "ROF-RO9-L",
+    purchasePriceExcl: 72.0,
+    salePriceIncl: 169,
     vatRate: 21,
     minStock: 4,
     supplierIndex: 2,
@@ -480,8 +528,9 @@ const PARTS: PartSeed[] = [
     brand: "Beon",
     sku: "HEL-BEO-024",
     hasBarcode: true,
-    purchasePrice: 38.0,
-    salePrice: 74.5,
+    supplierArticleNumber: "BEO-B701-S",
+    purchasePriceExcl: 38.0,
+    salePriceIncl: 89.95,
     vatRate: 21,
     minStock: 3,
     supplierIndex: 2,
@@ -495,8 +544,9 @@ const PARTS: PartSeed[] = [
     brand: "Piaggio",
     sku: "ACC-PIA-025",
     hasBarcode: true,
-    purchasePrice: 44.0,
-    salePrice: 84.5,
+    supplierArticleNumber: "PIA-TC-32L",
+    purchasePriceExcl: 44.0,
+    salePriceIncl: 99.95,
     vatRate: 21,
     minStock: 3,
     supplierIndex: 2,
@@ -508,8 +558,9 @@ const PARTS: PartSeed[] = [
     brand: "Kymco",
     sku: "ACC-KYM-026",
     hasBarcode: true,
-    purchasePrice: 21.0,
-    salePrice: 39.95,
+    supplierArticleNumber: "KYM-HG-5501",
+    purchasePriceExcl: 21.0,
+    salePriceIncl: 47.95,
     vatRate: 21,
     minStock: 3,
     supplierIndex: 2,
@@ -521,8 +572,9 @@ const PARTS: PartSeed[] = [
     brand: "Super73",
     sku: "ACC-S73-027",
     hasBarcode: true,
-    purchasePrice: 9.5,
-    salePrice: 19.95,
+    supplierArticleNumber: "S73-PH-002",
+    purchasePriceExcl: 9.5,
+    salePriceIncl: 23.95,
     vatRate: 21,
     minStock: 5,
     supplierIndex: 2,
@@ -534,8 +586,9 @@ const PARTS: PartSeed[] = [
     brand: "BTC",
     sku: "ACC-BTC-028",
     hasBarcode: true,
-    purchasePrice: 6.75,
-    salePrice: 13.95,
+    supplierArticleNumber: "BTC-MIR-L-08",
+    purchasePriceExcl: 6.75,
+    salePriceIncl: 16.95,
     vatRate: 21,
     minStock: 4,
     supplierIndex: 2,
@@ -547,8 +600,9 @@ const PARTS: PartSeed[] = [
     brand: "MT",
     sku: "ACC-MT-029",
     hasBarcode: true,
-    purchasePrice: 6.75,
-    salePrice: 13.95,
+    supplierArticleNumber: "MT-MIR-R-08",
+    purchasePriceExcl: 6.75,
+    salePriceIncl: 16.95,
     vatRate: 21,
     minStock: 4,
     supplierIndex: 2,
@@ -562,8 +616,9 @@ const PARTS: PartSeed[] = [
     brand: "Aprilia",
     sku: "CON-APR-030",
     hasBarcode: true,
-    purchasePrice: 4.5,
-    salePrice: 9.95,
+    supplierArticleNumber: "APR-CS-400",
+    purchasePriceExcl: 4.5,
+    salePriceIncl: 11.95,
     vatRate: 21,
     minStock: 8,
     supplierIndex: 1,
@@ -575,8 +630,8 @@ const PARTS: PartSeed[] = [
     brand: "NIU",
     sku: "CON-NIU-031",
     hasBarcode: true,
-    purchasePrice: 3.9,
-    salePrice: 8.5,
+    purchasePriceExcl: 3.9,
+    salePriceIncl: 10.5,
     vatRate: 21,
     minStock: 6,
     supplierIndex: 1,
@@ -590,8 +645,8 @@ const PARTS: PartSeed[] = [
     brand: "Vespa",
     sku: "OTH-VES-032",
     hasBarcode: true,
-    purchasePrice: 5.5,
-    salePrice: 12.5,
+    purchasePriceExcl: 5.5,
+    salePriceIncl: 14.95,
     vatRate: 21,
     minStock: 5,
     supplierIndex: 0,
@@ -603,8 +658,8 @@ const PARTS: PartSeed[] = [
     brand: "Peugeot",
     sku: "OTH-PEU-033",
     hasBarcode: false,
-    purchasePrice: 8.0,
-    salePrice: 16.5,
+    purchasePriceExcl: 8.0,
+    salePriceIncl: 19.95,
     vatRate: 21,
     minStock: 3,
     supplierIndex: 0,
@@ -618,8 +673,9 @@ const PARTS: PartSeed[] = [
     brand: null,
     sku: "UNI-OIL-034",
     hasBarcode: true,
-    purchasePrice: 5.2,
-    salePrice: 10.95,
+    supplierArticleNumber: "VD-OIL-1040-1L",
+    purchasePriceExcl: 5.2,
+    salePriceIncl: 12.95,
     vatRate: 21,
     minStock: 15,
     supplierIndex: 1,
@@ -633,8 +689,9 @@ const PARTS: PartSeed[] = [
     brand: null,
     sku: "UNI-OIL-035",
     hasBarcode: true,
-    purchasePrice: 4.8,
-    salePrice: 9.95,
+    supplierArticleNumber: "VD-OIL-2T-1L",
+    purchasePriceExcl: 4.8,
+    salePriceIncl: 11.95,
     vatRate: 21,
     minStock: 15,
     supplierIndex: 1,
@@ -647,8 +704,9 @@ const PARTS: PartSeed[] = [
     brand: null,
     sku: "UNI-OIL-036",
     hasBarcode: true,
-    purchasePrice: 3.5,
-    salePrice: 7.95,
+    supplierArticleNumber: "VD-BF-DOT4-500",
+    purchasePriceExcl: 3.5,
+    salePriceIncl: 9.5,
     vatRate: 21,
     minStock: 10,
     supplierIndex: 1,
@@ -661,8 +719,9 @@ const PARTS: PartSeed[] = [
     brand: null,
     sku: "UNI-ACC-037",
     hasBarcode: true,
-    purchasePrice: 6.9,
-    salePrice: 14.5,
+    supplierArticleNumber: "VD-LED-IND-12V",
+    purchasePriceExcl: 6.9,
+    salePriceIncl: 17.5,
     vatRate: 21,
     minStock: 6,
     supplierIndex: 2,
@@ -675,8 +734,8 @@ const PARTS: PartSeed[] = [
     brand: null,
     sku: "UNI-BND-038",
     hasBarcode: true,
-    purchasePrice: 6.0,
-    salePrice: 12.95,
+    purchasePriceExcl: 6.0,
+    salePriceIncl: 15.5,
     vatRate: 21,
     minStock: 6,
     supplierIndex: 1,
@@ -689,8 +748,9 @@ const PARTS: PartSeed[] = [
     brand: null,
     sku: "UNI-LCK-039",
     hasBarcode: true,
-    purchasePrice: 14.0,
-    salePrice: 27.5,
+    supplierArticleNumber: "VD-LCK-1830",
+    purchasePriceExcl: 14.0,
+    salePriceIncl: 32.95,
     vatRate: 21,
     minStock: 4,
     supplierIndex: 2,
@@ -703,8 +763,8 @@ const PARTS: PartSeed[] = [
     brand: null,
     sku: "UNI-REM-040",
     hasBarcode: false,
-    purchasePrice: 7.9,
-    salePrice: 15.95,
+    purchasePriceExcl: 7.9,
+    salePriceIncl: 19.5,
     vatRate: 21,
     minStock: 8,
     supplierIndex: 0,
@@ -739,10 +799,12 @@ function makeBarcode(index: number): string {
 async function main(): Promise<void> {
   console.log(`Seed gestart (vaste RNG-seed: ${SEED})`);
 
-  // 1. Opruimen in de volgorde die de foreign keys voorschrijven: Sale eerst
-  //    (verwijst naar Part), dan Part (verwijst naar Brand/Supplier), dan
-  //    Supplier en Brand. Zo is de seed idempotent: twee keer draaien geeft
-  //    geen duplicaten en geen foreign-key-fouten.
+  // 1. Opruimen in de volgorde die de foreign keys voorschrijven: StockMutation en
+  //    Sale eerst (beide verwijzen naar Part, met onDelete: Restrict), dan Part
+  //    (verwijst naar Brand/Supplier), dan Supplier en Brand. Zo is de seed
+  //    idempotent: twee keer draaien geeft geen duplicaten en geen
+  //    foreign-key-fouten.
+  await prisma.stockMutation.deleteMany({});
   await prisma.sale.deleteMany({});
   await prisma.part.deleteMany({});
   await prisma.supplier.deleteMany({});
@@ -849,15 +911,33 @@ async function main(): Promise<void> {
     );
   }
 
+  // Totaal verkochte stuks per onderdeel; nodig om beginstand en eindstand op elkaar
+  // te laten sluiten in het grootboek.
+  const soldByKey = new Map<string, number>();
+  for (const plan of salePlans) {
+    soldByKey.set(plan.partKey, (soldByKey.get(plan.partKey) ?? 0) + plan.quantity);
+  }
+
   // Bewust ondergewaardeerde voorraad voor een vaste selectie onderdelen (minimaal 5
   // vereist door T03). Dit gebeurt NA de verkoopsimulatie en is losgekoppeld van het
   // toeval daarin, zodat het gegarandeerd altijd >= 5 onderdelen oplevert die onder
   // hun minimumvoorraad zitten, met een niet-negatieve voorraad.
+  //
+  // Sinds T17 wordt de lage eindstand NIET meer los bovenop de simulatie gezet: dat
+  // zou het grootboek onverklaarbaar maken (de mutaties zouden op een andere stand
+  // uitkomen dan het onderdeel). In plaats daarvan wordt de BEGINSTAND verlaagd naar
+  // `gewenste eindstand + alles wat er verkocht is`, zodat INITIAL + alle verkopen
+  // precies op de gewenste lage eindstand uitkomen.
+  const startStockByKey = new Map(initialStockByKey);
   const finalStockByKey = new Map(stockCounter);
   const minStockByKey = new Map(PARTS.map((p) => [p.key, p.minStock] as const));
   for (const key of LOW_STOCK_KEYS) {
-    const forcedStock = randInt(0, 3);
+    const sold = soldByKey.get(key) ?? 0;
+    // Minimaal 1 stuk beginstand, anders zou de INITIAL-mutatie een delta van 0
+    // krijgen en die weigert de database (CHECK "delta" <> 0).
+    const forcedStock = sold > 0 ? randInt(0, 3) : randInt(1, 3);
     finalStockByKey.set(key, forcedStock);
+    startStockByKey.set(key, forcedStock + sold);
     minStockByKey.set(key, forcedStock + randInt(2, 6));
   }
 
@@ -872,8 +952,9 @@ async function main(): Promise<void> {
         category: part.category,
         sku: part.sku,
         barcode: part.hasBarcode ? makeBarcode(barcodeIndex) : null,
-        purchasePrice: part.purchasePrice,
-        salePrice: part.salePrice,
+        supplierArticleNumber: part.supplierArticleNumber ?? null,
+        purchasePriceExcl: part.purchasePriceExcl,
+        salePriceIncl: part.salePriceIncl,
         vatRate: part.vatRate,
         stockQuantity: finalStockByKey.get(part.key) ?? 0,
         minStock: minStockByKey.get(part.key) ?? 0,
@@ -895,27 +976,105 @@ async function main(): Promise<void> {
   }).length;
   console.log(`  waarvan ${lowStockCount} onder hun minimumvoorraad`);
 
-  // 5. Verkopen aanmaken met de historische prijzen van het onderdeel op dat moment.
+  // 5. Het voorraadgrootboek opent met de beginstand per onderdeel (T17). Dit
+  //    gebeurt VOOR de verkopen, en met een datum die voor het verkoopvenster van 90
+  //    dagen ligt, zodat de chronologie van het grootboek klopt.
+  const ledgerStart = new Date(now);
+  ledgerStart.setDate(ledgerStart.getDate() - LEDGER_START_DAYS_AGO);
+  ledgerStart.setHours(8, 0, 0, 0);
+
+  // Draaiende voorraadstand per onderdeel; hiermee worden `quantityBefore` en
+  // `quantityAfter` van elke mutatie bepaald.
+  const runningStock = new Map<string, number>();
+
+  let mutationCount = 0;
+  for (const part of PARTS) {
+    const startStock = startStockByKey.get(part.key) ?? 0;
+    runningStock.set(part.key, startStock);
+    await prisma.stockMutation.create({
+      data: {
+        partId: partIdByKey.get(part.key)!,
+        delta: startStock,
+        quantityBefore: 0,
+        quantityAfter: startStock,
+        reason: StockMutationReason.INITIAL,
+        note: "Beginstand bij het aanleggen van het onderdeel (seed-data).",
+        createdAt: ledgerStart,
+      },
+    });
+    mutationCount++;
+  }
+  console.log(`  ${mutationCount} INITIAL-voorraadmutaties aangemaakt`);
+
+  // 6. Verkopen aanmaken met de historische prijzen van het onderdeel op dat moment,
+  //    en per verkoop meteen de bijbehorende voorraadmutatie.
   //    (In deze seed is er geen prijshistorie gesimuleerd, dus de *AtSale-velden
   //    komen overeen met de huidige prijs van het onderdeel — dat is toegestaan, de
   //    velden bestaan zodat toekomstige prijswijzigingen de marge niet vervuilen.)
+  //
+  //    De verkopen worden CHRONOLOGISCH doorlopen (de simulatie hierboven koos de
+  //    datums in willekeurige volgorde). Anders zou de voorraadketen in het grootboek
+  //    heen en weer springen en zouden `quantityBefore`/`quantityAfter` niet op de
+  //    tijdlijn kloppen.
+  const chronologicalPlans = [...salePlans].sort(
+    (a, b) => a.soldAt.getTime() - b.soldAt.getTime(),
+  );
+
   let workshopCount = 0;
   let counterCount = 0;
-  for (const plan of salePlans) {
-    const part = PARTS.find((p) => p.key === plan.partKey)!;
-    const partId = partIdByKey.get(plan.partKey)!;
-    await prisma.sale.create({
+  for (const plan of chronologicalPlans) {
+    const part = PARTS.find((p) => p.key === plan.partKey);
+    const partId = partIdByKey.get(plan.partKey);
+    if (!part || !partId) {
+      throw new Error(`Onbekend onderdeel in verkoopplan: ${plan.partKey}`);
+    }
+
+    const sale = await prisma.sale.create({
       data: {
         partId,
         quantity: plan.quantity,
-        salePriceAtSale: part.salePrice,
-        purchasePriceAtSale: part.purchasePrice,
+        // Verkoopprijs INCL. btw, inkoopprijs EXCL. btw (SPEC §3 regel 0, v2.0).
+        salePriceInclAtSale: part.salePriceIncl,
+        purchasePriceExclAtSale: part.purchasePriceExcl,
         vatRateAtSale: part.vatRate,
         channel: plan.channel,
         reference: plan.reference,
         soldAt: plan.soldAt,
       },
+      select: { id: true },
     });
+
+    const before = runningStock.get(plan.partKey) ?? 0;
+    const after = before - plan.quantity;
+    if (after < 0) {
+      // Zou niet kunnen: de simulatie clampt al op de beschikbare voorraad. Toch
+      // expliciet, want een negatieve stand in het grootboek is stille datavervuiling
+      // (en de database weigert hem via een CHECK-constraint).
+      throw new Error(
+        `Voorraad van ${plan.partKey} zou negatief worden (${before} - ${plan.quantity}).`,
+      );
+    }
+    runningStock.set(plan.partKey, after);
+
+    await prisma.stockMutation.create({
+      data: {
+        partId,
+        delta: -plan.quantity,
+        quantityBefore: before,
+        quantityAfter: after,
+        // Werkplaatsverbruik krijgt zijn eigen reden, zodat het grootboek zonder
+        // join naar `Sale` te lezen is.
+        reason:
+          plan.channel === SaleChannel.WORKSHOP
+            ? StockMutationReason.WORKSHOP
+            : StockMutationReason.SALE,
+        note: plan.reference,
+        saleId: sale.id,
+        createdAt: plan.soldAt,
+      },
+    });
+    mutationCount++;
+
     if (plan.channel === SaleChannel.WORKSHOP) {
       workshopCount++;
     } else {
@@ -925,6 +1084,24 @@ async function main(): Promise<void> {
   console.log(
     `  ${salePlans.length} verkopen aangemaakt (${counterCount} balie, ${workshopCount} werkplaats)`,
   );
+  console.log(`  ${mutationCount} voorraadmutaties in totaal`);
+
+  // 7. Het grootboek narekenen: de laatste stand uit de mutatiereeks MOET gelijk zijn
+  //    aan de `stockQuantity` die op het onderdeel staat. Zonder deze controle zou
+  //    een fout in de beginstand of in de verkoopsimulatie een grootboek opleveren
+  //    dat er plausibel uitziet maar niet op de voorraad uitkomt — precies het soort
+  //    fout dat pas maanden later bij een telling opvalt.
+  for (const part of PARTS) {
+    const fromLedger = runningStock.get(part.key) ?? 0;
+    const onPart = finalStockByKey.get(part.key) ?? 0;
+    if (fromLedger !== onPart) {
+      throw new Error(
+        `Grootboek klopt niet voor ${part.key}: mutaties komen uit op ${fromLedger}, ` +
+          `maar het onderdeel staat op ${onPart}.`,
+      );
+    }
+  }
+  console.log("  grootboek sluit aan op de voorraadstand van elk onderdeel");
 
   // Bestseller-check (log-only, ter controle): totaal verkochte stuks per onderdeel.
   const totalsByKey = new Map<string, number>();

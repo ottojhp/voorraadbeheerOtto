@@ -3,18 +3,27 @@
  *
  * Drie bindende regels uit SPEC §3 zitten hier ingebakken:
  *
- * - regel 0: alle bedragen EXCLUSIEF btw.
+ * - regel 0: er wordt uitsluitend op EXCL.-basis gerekend. De verkoopprijs staat
+ *   sinds datamodel v2 INCLUSIEF btw in `Sale`, dus elke omzet- en margesom rekent
+ *   die eerst terug met {@link SALE_PRICE_EXCL_SQL}. Btw is geen omzet en geen winst
+ *   van de winkel. Sinds T18 geeft de kerncijfer-query daarnaast `revenueIncl` terug:
+ *   het bedrag dat de klanten werkelijk betaald hebben, uitsluitend om te TONEN
+ *   (incl. als hoofdbedrag, excl. eronder). Er wordt nergens met dat bedrag gerekend
+ *   — marge, margepercentage, bestsellers, merken, categorieën, het omzetverloop en
+ *   de CSV-export blijven onveranderd op excl.-basis, en elk veld zegt in zijn naam
+ *   wat het is.
  * - regel 1: naar buiten gaan uitsluitend plain DTO's — `Decimal` wordt `number`,
  *   `Date` wordt een ISO-string.
- * - regel 3 (historische correctheid): marge komt ALTIJD uit
- *   `salePriceAtSale - purchasePriceAtSale`, dus de prijzen zoals ze op het moment
- *   van verkoop vastlagen — nooit uit de huidige `Part.purchasePrice`/`salePrice`.
+ * - regel 3 (historische correctheid): marge komt ALTIJD uit de prijzen zoals ze op
+ *   het moment van verkoop vastlagen (het afgeleide excl.-bedrag uit
+ *   `salePriceInclAtSale` minus `purchasePriceExclAtSale`) — nooit uit de huidige
+ *   `Part.purchasePriceExcl`/`Part.salePriceIncl`.
  *   Die laatste kunnen inmiddels gewijzigd zijn; de marge van een verkoop van drie
  *   maanden geleden mag daar niet door veranderen.
  *
  * Aggregatie gebeurt in de database. `omzet` en `marge` zijn allebei een som van een
- * PRODUCT van kolommen (`quantity * salePriceAtSale`, resp.
- * `quantity * (salePriceAtSale - purchasePriceAtSale)`) — dat kan Prisma's
+ * PRODUCT van kolommen (`quantity * <verkoop excl.>`, resp.
+ * `quantity * (<verkoop excl.> - purchasePriceExclAtSale)`) — dat kan Prisma's
  * `aggregate`/`groupBy` niet (die sommeren één kolom), dus deze module gebruikt
  * `$queryRaw` met Prisma's tagged template (`Prisma.sql` + `Prisma.join`), net als
  * `getStockValue` in `@/lib/queries/dashboard.ts`. Elke variabele waarde (periode,
@@ -59,9 +68,17 @@ export type RevenueBucketSize = "day" | "week";
 // DTO's
 // ---------------------------------------------------------------------------
 
-/** Kerncijfers over de periode (SPEC §F6), EXCL. btw. */
+/**
+ * Kerncijfers over de periode (SPEC §F6). `revenue`, `margin` en `marginPct` staan
+ * EXCL. btw — dat is waar de rapportage over gaat, want btw is geen omzet en geen
+ * winst. `revenueIncl` staat er sinds T18 naast: het bedrag dat de klanten in deze
+ * periode werkelijk betaald hebben. De UI zet dat als hoofdbedrag met het
+ * excl.-bedrag eronder, maar er wordt nergens mee gerekend.
+ */
 export interface ReportSummaryDTO {
   revenue: number;
+  /** `Σ quantity * salePriceInclAtSale`: bruto-omzet INCL. btw (alleen tonen). */
+  revenueIncl: number;
   margin: number;
   /** `0` als `revenue` 0 is, nooit `NaN`. */
   marginPct: number;
@@ -72,7 +89,10 @@ export interface ReportSummaryDTO {
 /** Eén regel van de balie/werkplaats-uitsplitsing. */
 export interface ChannelBreakdownDTO {
   channel: SaleChannel;
+  /** EXCL. btw. */
   revenue: number;
+  /** INCL. btw (alleen tonen), zie {@link ReportSummaryDTO.revenueIncl}. */
+  revenueIncl: number;
   margin: number;
   itemsSold: number;
   transactionCount: number;
@@ -148,6 +168,25 @@ export const MAX_BESTSELLERS_LIMIT = 500;
  * `$queryRaw`-parameter als tekst binnenkomt; Postgres zet die niet vanzelf om naar
  * een enum-kolom.
  */
+/**
+ * De verkoopprijs per stuk EXCLUSIEF btw, afgeleid uit wat er historisch is
+ * vastgelegd: `salePriceInclAtSale / (1 + vatRateAtSale / 100)`, per stuk afgerond op
+ * centen (SPEC §3 regel 0, v2.0).
+ *
+ * Eén keer gedefinieerd en in elke query hieronder ingevoegd, zodat omzet, marge,
+ * kanaaluitsplitsing, bestsellers, merken, categorieën en het omzetverloop per
+ * constructie dezelfde afleiding gebruiken. Zes losse kopieën van deze expressie was
+ * de zekerste manier om ooit één plek te vergeten.
+ *
+ * Er wordt met `vatRateAtSale` gerekend, niet met het huidige `Part.vatRate`: een
+ * tariefwijziging mag de omzet van vorig kwartaal niet herschrijven.
+ *
+ * Het afronden gebeurt vóór de vermenigvuldiging met `quantity`, net als in
+ * `getStockValue`, zodat een rapportagetotaal gelijk blijft aan de som van de
+ * regelbedragen die de gebruiker in de UI ziet staan.
+ */
+const SALE_PRICE_EXCL_SQL = Prisma.sql`ROUND(s."salePriceInclAtSale" / (1 + s."vatRateAtSale" / 100), 2)`;
+
 function buildWhereSql(filters: ReportFilters): Prisma.Sql {
   const conditions: Prisma.Sql[] = [
     Prisma.sql`s."soldAt" >= ${filters.from}`,
@@ -171,6 +210,7 @@ function buildWhereSql(filters: ReportFilters): Prisma.Sql {
 
 interface SummaryRow {
   revenue: unknown;
+  revenueIncl?: unknown;
   margin: unknown;
   itemsSold: unknown;
   transactionCount: unknown;
@@ -184,6 +224,8 @@ export function summaryRowToDto(row: SummaryRow | undefined): ReportSummaryDTO {
 
   return {
     revenue,
+    // Ontbreekt de kolom (oudere aanroeper of een lege periode), dan 0 — nooit `NaN`.
+    revenueIncl: rawNumericToNumber(row?.revenueIncl),
     margin,
     marginPct: calcMarginPct(purchaseTotal, revenue),
     itemsSold: rawNumericToNumber(row?.itemsSold),
@@ -203,8 +245,9 @@ export async function getReportSummary(
 
   const rows = await prisma.$queryRaw<SummaryRow[]>`
     SELECT
-      COALESCE(SUM(s.quantity * s."salePriceAtSale"), 0) AS "revenue",
-      COALESCE(SUM(s.quantity * (s."salePriceAtSale" - s."purchasePriceAtSale")), 0) AS "margin",
+      COALESCE(SUM(s.quantity * ${SALE_PRICE_EXCL_SQL}), 0) AS "revenue",
+      COALESCE(SUM(s.quantity * s."salePriceInclAtSale"), 0) AS "revenueIncl",
+      COALESCE(SUM(s.quantity * (${SALE_PRICE_EXCL_SQL} - s."purchasePriceExclAtSale")), 0) AS "margin",
       COALESCE(SUM(s.quantity), 0) AS "itemsSold",
       COUNT(*) AS "transactionCount"
     FROM "Sale" s
@@ -242,8 +285,9 @@ export async function getChannelBreakdown(
   const rows = await prisma.$queryRaw<ChannelBreakdownRow[]>`
     SELECT
       s.channel AS "channel",
-      COALESCE(SUM(s.quantity * s."salePriceAtSale"), 0) AS "revenue",
-      COALESCE(SUM(s.quantity * (s."salePriceAtSale" - s."purchasePriceAtSale")), 0) AS "margin",
+      COALESCE(SUM(s.quantity * ${SALE_PRICE_EXCL_SQL}), 0) AS "revenue",
+      COALESCE(SUM(s.quantity * s."salePriceInclAtSale"), 0) AS "revenueIncl",
+      COALESCE(SUM(s.quantity * (${SALE_PRICE_EXCL_SQL} - s."purchasePriceExclAtSale")), 0) AS "margin",
       COALESCE(SUM(s.quantity), 0) AS "itemsSold",
       COUNT(*) AS "transactionCount"
     FROM "Sale" s
@@ -297,8 +341,8 @@ export async function getBestsellers(
       b.name AS "brandName",
       p."archivedAt" AS "archivedAt",
       COALESCE(SUM(s.quantity), 0) AS "quantitySold",
-      COALESCE(SUM(s.quantity * s."salePriceAtSale"), 0) AS "revenue",
-      COALESCE(SUM(s.quantity * (s."salePriceAtSale" - s."purchasePriceAtSale")), 0) AS "margin"
+      COALESCE(SUM(s.quantity * ${SALE_PRICE_EXCL_SQL}), 0) AS "revenue",
+      COALESCE(SUM(s.quantity * (${SALE_PRICE_EXCL_SQL} - s."purchasePriceExclAtSale")), 0) AS "margin"
     FROM "Sale" s
     JOIN "Part" p ON p.id = s."partId"
     LEFT JOIN "Brand" b ON b.id = p."brandId"
@@ -344,8 +388,8 @@ export async function getRevenueByBrand(
     SELECT
       b.id AS "brandId",
       b.name AS "brandName",
-      COALESCE(SUM(s.quantity * s."salePriceAtSale"), 0) AS "revenue",
-      COALESCE(SUM(s.quantity * (s."salePriceAtSale" - s."purchasePriceAtSale")), 0) AS "margin",
+      COALESCE(SUM(s.quantity * ${SALE_PRICE_EXCL_SQL}), 0) AS "revenue",
+      COALESCE(SUM(s.quantity * (${SALE_PRICE_EXCL_SQL} - s."purchasePriceExclAtSale")), 0) AS "margin",
       COALESCE(SUM(s.quantity), 0) AS "itemsSold"
     FROM "Sale" s
     JOIN "Part" p ON p.id = s."partId"
@@ -390,8 +434,8 @@ export async function getRevenueByCategory(
   const rows = await prisma.$queryRaw<CategoryRevenueRow[]>`
     SELECT
       p.category AS "category",
-      COALESCE(SUM(s.quantity * s."salePriceAtSale"), 0) AS "revenue",
-      COALESCE(SUM(s.quantity * (s."salePriceAtSale" - s."purchasePriceAtSale")), 0) AS "margin",
+      COALESCE(SUM(s.quantity * ${SALE_PRICE_EXCL_SQL}), 0) AS "revenue",
+      COALESCE(SUM(s.quantity * (${SALE_PRICE_EXCL_SQL} - s."purchasePriceExclAtSale")), 0) AS "margin",
       COALESCE(SUM(s.quantity), 0) AS "itemsSold"
     FROM "Sale" s
     JOIN "Part" p ON p.id = s."partId"
@@ -441,8 +485,8 @@ export async function getRevenueOverTime(
         date_trunc(${truncUnit}, s."soldAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Amsterdam'),
         'YYYY-MM-DD'
       ) AS "bucket",
-      COALESCE(SUM(s.quantity * s."salePriceAtSale"), 0) AS "revenue",
-      COALESCE(SUM(s.quantity * (s."salePriceAtSale" - s."purchasePriceAtSale")), 0) AS "margin"
+      COALESCE(SUM(s.quantity * ${SALE_PRICE_EXCL_SQL}), 0) AS "revenue",
+      COALESCE(SUM(s.quantity * (${SALE_PRICE_EXCL_SQL} - s."purchasePriceExclAtSale")), 0) AS "margin"
     FROM "Sale" s
     JOIN "Part" p ON p.id = s."partId"
     WHERE ${where}

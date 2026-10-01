@@ -6,9 +6,11 @@
  * `Decimal` en `Date` zijn niet serialiseerbaar richting client components en
  * `Decimal` rekent bovendien anders dan `number` (SPEC §3 regel 1).
  *
- * Alle bedragen zijn EXCLUSIEF btw; incl.-bedragen worden afgeleid en alleen getoond
- * (SPEC §3 regel 0). Marge, margepercentage en de prijs incl. btw komen uit
- * `@/lib/money`, zodat die formules maar op één plek staan.
+ * Prijzen komen uit de database zoals ze zijn opgeslagen: de verkoopprijs INCLUSIEF
+ * btw, de inkoopprijs EXCLUSIEF btw (SPEC §3 regel 0, v2.0). Het excl.-bedrag achter
+ * de verkoopprijs wordt hier afgeleid, en marge en margepercentage worden altijd op
+ * die excl.-basis berekend — btw is geen winst. De formules komen uit `@/lib/money`,
+ * zodat ze maar op één plek staan.
  *
  * Server-only: importeer dit bestand niet in een client component.
  */
@@ -17,7 +19,12 @@ import { Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/db";
 import type { Category } from "@/lib/labels";
-import { calcMargin, calcMarginPct, priceWithVat } from "@/lib/money";
+import {
+  calcMargin,
+  calcMarginPct,
+  priceExclVat,
+  priceWithVat,
+} from "@/lib/money";
 
 import type {
   PaginatedResult,
@@ -107,9 +114,13 @@ export function isLowStock(stockQuantity: number, minStock: number): boolean {
  * Dit is de enige plek waar `Decimal`/`Date` de app in- of uitgaan.
  */
 export function toPartDTO(part: PartRecord): PartDTO {
-  const purchasePrice = toNumber(part.purchasePrice);
-  const salePrice = toNumber(part.salePrice);
+  const purchasePriceExcl = toNumber(part.purchasePriceExcl);
+  const salePriceIncl = toNumber(part.salePriceIncl);
   const vatRate = toNumber(part.vatRate);
+  // Marge en margepercentage MOETEN op excl.-basis (SPEC §3 regel 0): de opgeslagen
+  // verkoopprijs is incl. btw, dus eerst terugrekenen en pas daarna vergelijken met
+  // de inkoopprijs. Rechtstreeks vergelijken zou elke marge ~21% te hoog maken.
+  const salePriceExcl = priceExclVat(salePriceIncl, vatRate);
 
   return {
     id: part.id,
@@ -119,12 +130,16 @@ export function toPartDTO(part: PartRecord): PartDTO {
     sku: part.sku,
     barcode: part.barcode,
 
-    purchasePrice,
-    salePrice,
+    purchasePriceExcl,
+    // Alleen voor de weergave (T18): de inkoopprijs staat op het scherm net als de
+    // verkoopprijs, met het incl.-bedrag als hoofdbedrag. Er wordt nooit met dit
+    // getal gerekend — de marge hieronder gebruikt uitsluitend excl.-bedragen.
+    purchasePriceIncl: priceWithVat(purchasePriceExcl, vatRate),
+    salePriceIncl,
     vatRate,
-    salePriceInclVat: priceWithVat(salePrice, vatRate),
-    margin: calcMargin(purchasePrice, salePrice),
-    marginPct: calcMarginPct(purchasePrice, salePrice),
+    salePriceExcl,
+    margin: calcMargin(purchasePriceExcl, salePriceExcl),
+    marginPct: calcMarginPct(purchasePriceExcl, salePriceExcl),
 
     stockQuantity: part.stockQuantity,
     minStock: part.minStock,
@@ -276,7 +291,8 @@ function pageCountOf(total: number, pageSize: number): number {
  * Gepagineerde lijst met onderdelen, inclusief filters en sortering (SPEC §F2).
  *
  * Sorteren op marge kan Postgres hier niet zelf: marge is een afgeleide waarde
- * (`salePrice - purchasePrice`) en Prisma's `orderBy` accepteert geen expressies.
+ * (verkoopprijs excl. btw − `purchasePriceExcl`) en Prisma's `orderBy` accepteert
+ * geen expressies.
  * We lossen dat op met twee queries in plaats van na-sorteren binnen de pagina:
  *
  *  1. haal van álle rijen die aan het filter voldoen alleen `id`, `name` en de twee
@@ -287,8 +303,9 @@ function pageCountOf(total: number, pageSize: number): number {
  * Afweging: na-sorteren binnen één pagina zou goedkoper zijn, maar maakt paginering
  * stuk — pagina 2 zou dan op de 51e t/m 100e rij op náám gesorteerd zijn en vervolgens
  * binnen die willekeurige deelverzameling op marge. Dat is geen sortering. De
- * `$queryRaw`-variant (`ORDER BY ("salePrice" - "purchasePrice")`) zou wél in SQL
- * sorteren, maar dwingt tot het dupliceren van de hele where-clause in ruwe SQL.
+ * `$queryRaw`-variant (`ORDER BY (afgeleid excl.-bedrag - "purchasePriceExcl")`) zou
+ * wél in SQL sorteren, maar dwingt tot het dupliceren van de hele where-clause in
+ * ruwe SQL.
  * Consequentie van de gekozen aanpak: bij sorteren op marge leest stap 1 alle
  * gefilterde rijen. Voor het assortiment van één winkel (duizenden onderdelen) is dat
  * verwaarloosbaar; bij tienduizenden rijen is de volgende stap een gegenereerde
@@ -312,8 +329,11 @@ export async function listParts(
       select: {
         id: true,
         name: true,
-        purchasePrice: true,
-        salePrice: true,
+        purchasePriceExcl: true,
+        salePriceIncl: true,
+        // Nodig om de verkoopprijs terug te rekenen naar excl. btw; zonder het
+        // tarief is de marge niet te bepalen.
+        vatRate: true,
       },
     });
 
@@ -322,8 +342,8 @@ export async function listParts(
         id: row.id,
         name: row.name,
         margin: calcMargin(
-          toNumber(row.purchasePrice),
-          toNumber(row.salePrice),
+          toNumber(row.purchasePriceExcl),
+          priceExclVat(toNumber(row.salePriceIncl), toNumber(row.vatRate)),
         ),
       }))
       .sort((a, b) => {
@@ -471,7 +491,7 @@ export async function searchPartsForSale(
       sku: true,
       barcode: true,
       stockQuantity: true,
-      salePrice: true,
+      salePriceIncl: true,
       vatRate: true,
       brand: { select: { name: true } },
     },
@@ -480,7 +500,7 @@ export async function searchPartsForSale(
   });
 
   return rows.map((row) => {
-    const salePrice = toNumber(row.salePrice);
+    const salePriceIncl = toNumber(row.salePriceIncl);
     const vatRate = toNumber(row.vatRate);
 
     return {
@@ -491,9 +511,9 @@ export async function searchPartsForSale(
       sku: row.sku,
       barcode: row.barcode,
       stockQuantity: row.stockQuantity,
-      salePrice,
+      salePriceIncl,
       vatRate,
-      salePriceInclVat: priceWithVat(salePrice, vatRate),
+      salePriceExcl: priceExclVat(salePriceIncl, vatRate),
     };
   });
 }

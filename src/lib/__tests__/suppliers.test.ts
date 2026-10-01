@@ -144,11 +144,11 @@ describe("DTO-mappers (SPEC §3 regel 1: geen Decimal/Date naar client component
       sku: "SKU-001",
       stockQuantity: 4,
       minStock: 2,
-      salePrice: new Prisma.Decimal("19.99"),
+      salePriceIncl: new Prisma.Decimal("19.99"),
     });
 
-    expect(dto.salePrice).toBe(19.99);
-    expect(typeof dto.salePrice).toBe("number");
+    expect(dto.salePriceIncl).toBe(19.99);
+    expect(typeof dto.salePriceIncl).toBe("number");
   });
 
   it("toSupplierDetailDTO zet Decimal- en Date-velden om naar number/ISO-string", () => {
@@ -173,7 +173,7 @@ describe("DTO-mappers (SPEC §3 regel 1: geen Decimal/Date naar client component
           sku: "SKU-001",
           stockQuantity: 4,
           minStock: 2,
-          salePrice: new Prisma.Decimal("19.99"),
+          salePriceIncl: new Prisma.Decimal("19.99"),
         },
       ],
     });
@@ -181,8 +181,8 @@ describe("DTO-mappers (SPEC §3 regel 1: geen Decimal/Date naar client component
     expect(dto.createdAt).toBe("2026-01-15T10:00:00.000Z");
     expect(dto.updatedAt).toBe("2026-02-20T08:30:00.000Z");
     expect(dto.archivedAt).toBeNull();
-    expect(dto.parts[0].salePrice).toBe(19.99);
-    expect(typeof dto.parts[0].salePrice).toBe("number");
+    expect(dto.parts[0].salePriceIncl).toBe(19.99);
+    expect(typeof dto.parts[0].salePriceIncl).toBe("number");
 
     // Geen enkel veld mag nog een Decimal- of Date-object zijn.
     for (const value of Object.values(dto)) {

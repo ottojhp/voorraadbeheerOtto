@@ -6,6 +6,516 @@ in `docs/TASKS.md`.
 
 Nieuwste notitie bovenaan.
 
+## [T18] Prijzen inclusief btw tonen en invoeren — 2026-10-01
+**Status:** klaar voor review
+
+**Aangemaakte bestanden:** src/components/PriceWithVat.tsx
+
+**Gewijzigde bestanden:** src/lib/money.ts, src/lib/queries/types.ts,
+src/lib/queries/parts.ts, src/lib/queries/dashboard.ts, src/lib/queries/reports.ts,
+src/lib/queries/sales.ts, src/lib/validation/parts.ts,
+src/app/(app)/page.tsx, src/app/(app)/onderdelen/PartsTable.tsx,
+src/app/(app)/onderdelen/PartForm.tsx, src/app/(app)/onderdelen/actions.ts,
+src/app/(app)/onderdelen/[id]/page.tsx, src/app/(app)/verkoop/SaleScreen.tsx,
+src/app/(app)/verkoop/RecentSalesCard.tsx, src/app/(app)/rapportages/page.tsx,
+src/lib/__tests__/money.test.ts, src/lib/__tests__/parts-form.test.ts,
+src/lib/__tests__/parts-overview.test.ts, src/lib/__tests__/dashboard.test.ts,
+src/lib/__tests__/reports.test.ts, docs/TASKS.md, docs/PROGRESS.md
+
+**Wat is gebouwd:**
+
+*Eén presentatievorm, één component.* `src/components/PriceWithVat.tsx` is de enige
+plek waar een bedrag-met-btw wordt opgemaakt: het incl.-bedrag groot met het label
+"incl. btw" erachter, het excl.-bedrag kleiner eronder met "excl. btw". Beide bedragen
+zijn altijd gelabeld — een kaal bedrag zonder label is in deze app een bug, want bij
+21% zit er een vijfde verschil tussen de twee. Het component rekent zelf niets uit; het
+krijgt twee kant-en-klare getallen en formatteert ze met `formatEuro`. Daarnaast staat
+daar `MARGIN_BASIS_NOTE` / `<MarginBasisNote>`: één vaste zin ("Marge = verkoopprijs
+excl. btw − inkoopprijs excl. btw. Btw is geen winst: die draag je af."), zodat die
+uitleg op geen enkel scherm anders klinkt of ontbreekt.
+
+In gebruik op: voorraadoverzicht (tabel én mobiele kaarten, voor inkoop- én
+verkoopprijs), detailpagina, verkoopscherm (zoekresultaten, gekozen onderdeel,
+regeltotaal, laatste verkopen), dashboard (voorraadwaarde verkoop, laatste verkopen) en
+rapportages (omzetkaart, balie/werkplaats).
+
+*Inkoopprijs ook incl. als hoofdbedrag.* `PartDTO` heeft er één afgeleid veld bij,
+`purchasePriceIncl` (= `priceWithVat(purchasePriceExcl, vatRate)`), uitsluitend om te
+tonen. Er wordt nergens mee gerekend: marge en voorraadwaarde inkoop blijven op
+`purchasePriceExcl`.
+
+*Teksten.* Op het dashboard stond "alle bedragen exclusief btw" — die belofte kan niet
+meer kloppen zodra er twee soorten bedragen op het scherm staan, dus die algemene regel
+is weg en elke kaart zegt nu zelf wat het is. "Voorraadwaarde inkoop" toont
+€ 14.313,15 met "excl. btw — zoals op de leveranciersfacturen" eronder;
+"Voorraadwaarde verkoop" toont € 32.628,90 incl. btw met € 26.966,71 excl. btw
+eronder. Daarvoor geeft `getStockValue()` er één som bij terug
+(`stockValueSaleIncl`), in dezelfde `$queryRaw`-scan. Op `/rapportages` is de
+beschrijving herschreven en dragen "Marge (excl. btw)", "Margepercentage (excl. btw)",
+"Omzet per merk (excl. btw)", "Omzet per categorie (excl. btw)", "Omzetverloop
+(excl. btw)" en de bestsellerkolommen hun grondslag in de kop. Bij de CSV-knop staat
+er expliciet bij dat omzet en marge in het bestand exclusief btw zijn (dat stond al in
+de kopregel van de CSV zelf).
+
+*Invoer verkoopprijs.* Blijft incl. btw. Onder het veld staat nu live "Dat is € X
+excl. btw. Dit bedrag wordt exact zo opgeslagen als je het intypt; het excl.-bedrag is
+afgeleid." Het live-blok eronder toont marge in € en %, verkoopprijs excl. btw én
+inkoopprijs excl. btw ("wordt opgeslagen"), met de margetoelichting eronder.
+
+*Invoer inkoopprijs: de schakelaar.* Boven het inkoopveld staan twee knoppen,
+"Excl. btw (factuur)" en "Incl. btw", met excl. als standaard — leveranciersfacturen
+zijn nu eenmaal exclusief. De keuze gaat als verborgen veld `purchasePriceVatMode` mee.
+Het label van het invoerveld verandert mee ("Ingevoerd bedrag (incl./excl. btw)") en de
+regel eronder laat live zien wat de andere kant is: bij excl. "Dat is € 8,17 incl.
+btw", bij incl. "Wordt opgeslagen als € 10,00 excl. btw. Terugrekenen rondt af op
+centen, dus het incl.-bedrag kan daarna een cent afwijken."
+
+Het terugrekenen gebeurt **server-side in het Zod-schema**, niet in de server actions.
+Er zijn twee actions die hetzelfde formulier verwerken (aanmaken en bewerken); een
+omrekening die je op één van de twee vergeet zou een inkoopprijs 21% te hoog opslaan
+zonder dat iets faalt. Door het als transformatie op `partFormSchema` te zetten is
+`purchasePriceExcl` in `PartFormValues` per constructie een excl.-bedrag. Een
+ontbrekende of lege keuze valt terug op `"excl"` (de veilige kant: dan wordt het
+ingetypte bedrag ongewijzigd opgeslagen); een onbekende waarde wordt gewéígerd in
+plaats van stilzwijgend als excl. behandeld.
+
+**Keuzes en afwijkingen:**
+
+- **Bug in mijn eigen eerste versie van de schakelaar, gevonden in de browser.** De
+  schakelaar was eerst een radiogroep. Na een validatiefout rendert de server het
+  formulier opnieuw, en die server weet niets van de keuze in de browser: hij schrijft
+  `checked` altijd op "excl". React werkte de DOM dan niet bij (de `checked`-prop was
+  in zijn ogen niet veranderd), met als resultaat: het scherm liet "Incl. btw"
+  gemarkeerd staan, het veldlabel zei "(incl. btw)" en de live regel beloofde "wordt
+  opgeslagen als € 5,58 excl. btw" — terwijl het formulier `excl` zou versturen en er
+  € 6,75 opgeslagen zou worden. Exact de stille fout van 21% die deze schakelaar hoort
+  te voorkomen, en onzichtbaar voor `tsc`, ESLint, de tests én een rendertest met
+  `curl`; alleen een echte klik in een echte browser laat dit zien. Nu is het één
+  verborgen veld dat gevuld wordt vanuit de React-state, met twee `type="button"`
+  knoppen (`aria-pressed`) ernaast. Daarmee kan de verzonden waarde per constructie
+  niet afwijken van wat er op het scherm staat. De uitleg staat als comment bij
+  `purchaseVatMode` in `PartForm.tsx`.
+- **Rapportages blijven op excl.-basis rekenen.** Alleen de omzetkaart en de
+  balie/werkplaats-uitsplitsing tonen het incl.-bedrag als hoofdbedrag; dat komt uit
+  één extra som (`revenueIncl = Σ quantity * salePriceInclAtSale`) die naast de
+  bestaande excl.-sommen is gezet. Marge, margepercentage, bestsellers, omzet per merk
+  en per categorie, het omzetverloop en de CSV-export zijn ongewijzigd en blijven
+  excl. — btw is geen omzet en geen winst. `revenueIncl` wordt rechtstreeks uit de
+  opgeslagen incl.-prijs gesommeerd en niet heen-en-weer gerekend, zodat er geen
+  afrondingscent in een werkelijk betaald bedrag sluipt.
+- **Nieuwe helper `calcLineTotal` in `money.ts`.** Regeltotalen werden op drie plekken
+  met een kale `prijs * aantal` berekend, deels in componenten. Dat is nu één functie
+  die op centen afrondt (`20,65 × 3` is in floating point 61.949999999999996).
+  Acceptatiecriterium "geen losse berekeningen in componenten".
+- **Geldvelden in het formulier tonen altijd twee decimalen.** `€ 10,00` kwam na het
+  opslaan terug als "10". Zelfde bedrag, maar het ziet eruit alsof het formulier iets
+  anders bewaard heeft — en juist bij deze bedragen gaat het erom dat zichtbaar is dat
+  er niets kwijtraakt. Het btw-tarief houdt zijn eigen notatie ("21", niet "21,00").
+- **Schema niet aangeraakt**, conform de opdracht: dit is presentatie en invoer.
+
+**Bewust niet gedaan:** geen incl.-kolom in de CSV-export (criterium zegt dat die
+excl. blijft), geen incl.-bedragen bij bestsellers/merk/categorie (die lijsten gaan
+over omzet, en omzet is excl.), en de kanaalkeuze in het verkoopscherm is nog steeds
+een radiogroep — zie de observatie in TASKS.md.
+
+**Verificatie:** alles gedraaid met Node 22 uit de scratchpad, tegen de lokale
+Postgres op poort 5433. `.env.neon` is niet aangeraakt en er is niets tegen Neon
+gedraaid.
+
+| Controle | Uitkomst |
+|---|---|
+| `npx tsc --noEmit` | 0 fouten |
+| `npx vitest run` | 360 tests groen in 13 bestanden (was 345; 15 nieuwe, geen assertie verzwakt) |
+| `npx eslint .` | schoon (exit 0) |
+| `npx next build` | slaagt; alle `(app)`-routes nog dynamisch |
+
+**Rendertest** (dev-server op 3111 opnieuw gestart ná de build, sessiecookie via de
+eigen `createSessionValue()` — nergens een wachtwoord ingetypt): `/` 200,
+`/onderdelen` 200, `/onderdelen/nieuw` 200, `/onderdelen/[id]` 200,
+`/onderdelen/[id]/bewerken` 200, `/verkoop` 200, `/leveranciers` 200, `/merken` 200,
+`/rapportages` 200.
+
+In de HTML van `/onderdelen` staan 142 incl./excl.-blokken, bijvoorbeeld inkoop
+€ 175,45 incl. btw met € 145,00 excl. btw eronder en verkoop € 299,00 incl. btw met
+€ 247,11 excl. btw eronder. Op de detailpagina van ACC-BTC-028: verkoop € 16,95 incl.
+btw / € 14,01 excl. btw, inkoop € 8,17 incl. btw / € 6,75 excl. btw. De zin "alle
+bedragen exclusief btw" komt nergens meer voor.
+
+**Afrondingstest** — opslaan via het échte formulier (server action over HTTP),
+daarna de bewerkpagina opnieuw opgehaald:
+
+| Ingevoerd (incl. btw, 21%) | In de database | Na herladen in het veld |
+|---|---|---|
+| 10,00 | 10 | "10,00" |
+| 19,99 | 19.99 | "19,99" |
+| 24,95 | 24.95 | "24,95" |
+
+Geen cent verloren. De oude excl.-opslag maakte van € 10,00 → 8,26 → € 9,99.
+
+**Schakelaar end-to-end** (zowel via HTTP als met echte kliks in de browser):
+inkoop "12,10" met de schakelaar op INCL. wordt € 10,00 excl. opgeslagen; dezelfde
+invoer met de schakelaar op EXCL. wordt € 12,10. Na een validatiefout (verkoopprijs
+"19,999") blijft de keuze op "Incl. btw" staan, blijven de ingetypte bedragen staan,
+en blijft de database ongewijzigd.
+
+**Voor/na-cijfers** (zelfde query vóór en ná alle wijzigingen, hele historie):
+
+| Grootheid | Vóór | Ná |
+|---|---|---|
+| Omzet excl. btw | € 11.751,31 | € 11.751,31 |
+| Marge excl. btw | € 5.297,51 | € 5.297,51 |
+| Verkochte stuks / transacties | 186 / 88 | 186 / 88 |
+| Voorraadwaarde inkoop excl. btw | € 14.313,15 | € 14.313,15 |
+| Voorraadwaarde verkoop excl. btw | € 26.966,71 | € 26.966,71 |
+| Voorraadwaarde verkoop incl. btw | € 32.628,90 | € 32.628,90 |
+
+Identiek, zoals het hoort: er is alleen presentatie en invoer veranderd. Het
+testonderdeel ACC-BTC-028 is na afloop exact teruggezet op € 6,75 excl. /
+€ 16,95 incl. / 21%.
+
+**Mobiel (375px, echte browser).** Op `/onderdelen` staan op elke kaart "Inkoop" en
+"Verkoop" naast elkaar, elk met het incl.-bedrag op de eerste regel en het
+excl.-bedrag eronder; de marge staat over de volle breedte eronder. Geen afgebroken
+bedragen en `document.scrollWidth` is 375 — dus geen horizontaal scrollen. Op de
+detailpagina staan verkoop- en inkoopprijs onder elkaar in dezelfde vorm, met de
+margetoelichting onder de marge; ook daar geen overloop. Elk bedrag is
+`whitespace-nowrap`, maar bedrag en label mogen van elkaar afbreken — zo kan een
+bedrag van vier cijfers nooit middenin splitsen en loopt een cel niet over.
+
+---
+
+## [T21+T22] Debugcode verwijderd en grootboek sluitend gemaakt — 2026-10-01
+**Status:** klaar voor review
+
+**Aangemaakte bestanden:** src/app/(app)/verkoop/RecentSalesCard.tsx
+
+**Gewijzigde bestanden:** src/app/(app)/verkoop/page.tsx,
+src/app/(app)/onderdelen/BarcodeField.tsx, src/lib/queries/sales.ts,
+src/app/(app)/onderdelen/actions.ts, src/lib/__tests__/sales.test.ts,
+docs/TASKS.md, docs/PROGRESS.md
+
+**Wat is gebouwd:**
+
+*T21 — debugcode weg.* Uit `verkoop/page.tsx` zijn drie dingen verdwenen: de
+uitzondering `query !== "demo"` in de zoekvoorwaarde (nu gewoon `else if (query)`),
+het `// TIJDELIJK`-blok dat bij zoekterm "demo" een verzonnen onderdeel met
+`id: "demo_1"` selecteerde, en de `.catch(() => [])` op `listRecentSales`. `grep -ran
+"TIJDELIJK" src/` geeft nul treffers. "Laatste verkopen" is verhuisd naar de nieuwe
+async server component `RecentSalesCard`, die zelf een `{ ok: true, sales } | { ok:
+false, error }`-resultaat maakt: lukt de query niet, dan verschijnt op de plek van de
+lijst een Nederlandse melding ("De laatste verkopen konden niet worden opgehaald.
+Verkopen registreren werkt wel; …") met `role="alert"`, en gaat de technische oorzaak
+naar de serverlog. Ook de `.catch` in `BarcodeField.tsx` slikte een fout stil weg —
+zonder melding kan de gebruiker "geen waarschuwing" niet onderscheiden van "controle
+niet uitgevoerd" — dus daar staat nu een neutrale amber-regel bij ("De controle op
+dubbele barcodes kon niet worden uitgevoerd. Je kunt gewoon opslaan; …"). Die regel
+blokkeert het opslaan niet: de unique constraint vangt een echte dubbele barcode bij
+het opslaan alsnog af.
+
+*T22 — grootboek sluitend.* `registerSale()` schrijft nu binnen dezelfde
+`prisma.$transaction` een `StockMutation` (reason `SALE` bij kanaal COUNTER,
+`WORKSHOP` bij kanaal WORKSHOP, `delta` negatief, `saleId` gevuld, de
+werkorderreferentie als `note`). `createPartAction` schrijft bij een beginvoorraad > 0
+een `INITIAL`-regel, `updatePartAction` bij een gewijzigde voorraad een
+`CORRECTION`-regel met de oude en de nieuwe stand — en bij een ongewijzigde voorraad
+geen regel. Beide acties zitten daarvoor nu in een `$transaction`, dus een mislukte
+mutatieregel draait ook de voorraadwijziging terug.
+
+**Keuzes en afwijkingen:**
+- **`quantityBefore` wordt afgeleid, niet apart gelezen.** De voorwaardelijke
+  `updateMany` (de race-afvang tussen twee balies) is ongemoeid gebleven. De stand
+  vóór de mutatie komt niet uit een extra SELECT vóór de update — dat zou precies de
+  lezen-dan-schrijven-race terugbrengen — en ook niet uit de eerste lezing in stap 1,
+  want die is genomen zonder slot en kan al verouderd zijn. Hij wordt afgeleid uit de
+  stand ná de update: onze eigen `UPDATE` houdt tot het commit-moment een rijslot op
+  die `Part`-rij, dus `after.stockQuantity` is de werkelijke stand ná precies onze
+  mutatie, en omdat de update RELATIEF is (`decrement: quantity`) geldt per definitie
+  `quantityBefore = quantityAfter + quantity`. Een levering die tussen stap 1 en stap 2
+  binnenkwam vervuilt de regel dus niet; die hoort een eigen `DELIVERY`-regel te
+  krijgen. De uitleg staat als comment bij stap 5 in `sales.ts`.
+- **Geen fallback meer op `newStockQuantity`.** Was de stand na de update niet
+  leesbaar, dan gebruikte `registerSale` `part.stockQuantity - quantity`. Dat zou nu
+  een grootboekregel met verzonnen standen opleveren, dus dat geval gooit en draait de
+  transactie terug (kan in de praktijk niet: de UPDATE houdt het rijslot).
+- **Eigen component in plaats van een `error.tsx`.** Een error-boundary vervangt de
+  hele route, inclusief het verkoopformulier. De fout wordt daarom binnen
+  `RecentSalesCard` afgehandeld en niet doorgegooid, zodat zoeken, scannen en
+  verkopen blijven werken als alleen het lijstje faalt.
+- **`CORRECTION` leest de oude stand wél binnen de transactie.** Het bewerkformulier
+  zet de voorraad op een absoluut getal dat de gebruiker intypt (een correctie, geen
+  relatieve mutatie), dus daar is lezen-dan-schrijven inherent aan de functie.
+
+**Bewust niet gedaan:** geen UI die het grootboek toont, geen `DELIVERY`- of
+`COUNT`-pad (staan niet in de acceptatiecriteria van T21/T22), en de `.catch` in
+`BarcodeField` blokkeert nog steeds niets — dat zou het formulier onbruikbaar maken
+als de controle-endpoint hapert.
+
+**Verificatie:** alles gedraaid met Node 22 uit de scratchpad, tegen de lokale
+Postgres op poort 5433. `.env.neon` is niet aangeraakt en er is niets tegen Neon
+gedraaid.
+
+| Controle | Uitkomst |
+|---|---|
+| `npx tsc --noEmit` | 0 fouten |
+| `npx vitest run` | 345 tests groen in 13 bestanden (was 339; 6 nieuwe, geen assertie verzwakt) |
+| `npx eslint .` | schoon (exit 0) |
+| `npx next build` | slaagt; `/verkoop` 3.9 kB, alle `(app)`-routes nog dynamisch |
+| `grep -ran "TIJDELIJK" src/` | geen treffers |
+
+**Rendertest** (dev-server op 3111 opnieuw gestart ná de build, sessiecookie via de
+eigen `createSessionValue()` — nergens een wachtwoord ingetypt): `/` 200,
+`/onderdelen` 200, `/verkoop` 200, `/leveranciers` 200, `/merken` 200,
+`/rapportages` 200. `/verkoop?query=demo` geeft 200 en toont GEEN verzonnen onderdeel
+meer; `/verkoop?q=demo` (de parameter die de pagina echt leest) doet nu een gewone
+databasezoekopdracht en meldt "Geen onderdeel gevonden voor 'demo'", terwijl
+`/verkoop?q=remblok` de echte onderdelen REM-001 en REM-040 vindt.
+
+**Foutpad van "Laatste verkopen" echt getest:** met Postgres tijdelijk gestopt geeft
+`/verkoop` nog steeds 200, staat het verkoopscherm er volledig, en staat op de plek
+van de lijst "De laatste verkopen konden niet worden opgehaald. Verkopen registreren
+werkt wel; vernieuw de pagina om het opnieuw te proberen." Na het herstarten van
+Postgres is die melding weg en staan de vijf laatste verkopen er weer.
+
+**Echte verkooptest tegen de lokale database** (`registerSale()`, onderdeel
+ACC-BTC-028 "Spiegel links"):
+
+| Stap | stockQuantity | som(delta) | mutaties | nieuwste regel |
+|---|---|---|---|---|
+| vóór | 41 | 41 | 3 | — |
+| balie, 2 stuks | 39 | 39 | 4 | `delta -2, before 41, after 39, reason SALE, saleId gevuld` |
+| werkplaats, 1 stuk | 38 | 38 | 5 | `delta -1, before 39, after 38, reason WORKSHOP, note "WO-T22-TEST", saleId gevuld` |
+
+Over de hele database: 40 onderdelen, waarvan **0** met een som van `delta`'s die
+afwijkt van `stockQuantity`.
+
+**Echte test van de twee formulierpaden** (server actions direct aangeroepen tegen de
+lokale database; `revalidatePath` gooit dan buiten een request, ná de transactie, dus
+het databaseresultaat is echt): aanmaken met beginvoorraad 7 → één `INITIAL`-regel
+(`delta 7, before 0, after 7`); daarna alleen de prijs wijzigen → nog steeds 1 regel
+(géén mutatie); voorraad 7 → 12 → `CORRECTION` (`delta 5, before 7, after 12`);
+voorraad 12 → 9 → `CORRECTION` (`delta -3, before 12, after 9`); slotsom
+`stockQuantity 9` = `som(delta) 9`. Aanmaken met beginvoorraad 0 levert 0 mutaties op.
+Het testonderdeel en zijn mutaties zijn daarna weer opgeruimd.
+
+**Rollback echt aangetoond:** een transactie die de voorraad van ACC-BTC-028 met 2
+verlaagt (binnen de transactie zichtbaar als 36) en daarna een mutatieregel met
+`delta: 0` probeert te schrijven, wordt door de CHECK-constraint
+`StockMutation_delta_not_zero` geweigerd (Postgres 23514); ná de rollback staat de
+voorraad weer op 38. Een voorraadwijziging zonder grootboekregel kan dus niet
+blijven bestaan. Het equivalent voor `registerSale` zelf zit als unittest in
+`sales.test.ts` (mutatie-insert faalt → de fout borrelt uit de transactiecallback).
+
+**Mobiel:** niet opnieuw visueel gecontroleerd; de lay-out is niet gewijzigd. De twee
+nieuwe meldingen zijn gewone tekstblokken op volle breedte binnen bestaande
+containers (`Card`, respectievelijk onder het barcodeveld) en kunnen op 375px niet
+horizontaal scrollen.
+
+**Openstaand / risico's:**
+- De `CORRECTION` op het bewerkformulier leest de oude stand binnen de transactie en
+  overschrijft de voorraad daarna absoluut. Slaan twee mensen tegelijk hetzelfde
+  formulier op, dan wint de laatste en staan er twee correctieregels die samen wél
+  kloppen met de eindstand. Een echte los-van-elkaar-voorraadcorrectie (met eigen
+  scherm en optelling) staat niet in T22.
+- `grep` behandelt `src/lib/auth.ts`, `src/lib/__tests__/auth.test.ts` en
+  `src/components/__tests__/barcode-scanner.test.ts` als binair (die bevatten met
+  opzet literal control-characters in regexen en testdata). Zonder `-a` slaat grep die
+  bestanden stil over — relevant voor wie later op achtergebleven markers zoekt.
+
+---
+
+## [T17] Datamodel v2: prijzen incl. btw, leveranciersartikelnummer, voorraadmutaties — 2026-09-30
+**Status:** klaar voor review
+
+**Aangemaakte bestanden:** prisma/migrations/20260930000000_datamodel_v2/migration.sql
+
+**Gewijzigde bestanden:** prisma/schema.prisma, prisma/seed.ts, src/lib/money.ts,
+src/lib/queries/types.ts, src/lib/queries/parts.ts, src/lib/queries/sales.ts,
+src/lib/queries/dashboard.ts, src/lib/queries/reports.ts,
+src/lib/queries/suppliers.ts, src/lib/validation/parts.ts,
+src/app/(app)/page.tsx, src/app/(app)/onderdelen/actions.ts,
+src/app/(app)/onderdelen/PartForm.tsx, src/app/(app)/onderdelen/PartsTable.tsx,
+src/app/(app)/onderdelen/[id]/page.tsx,
+src/app/(app)/onderdelen/[id]/bewerken/page.tsx, src/app/(app)/verkoop/page.tsx,
+src/app/(app)/verkoop/SaleScreen.tsx, src/app/(app)/leveranciers/[id]/page.tsx,
+eslint.config.mjs, src/lib/__tests__/{money,parts,parts-form,parts-overview,sales,
+suppliers,dashboard,reports,auth}.test.ts, docs/TASKS.md, docs/PROGRESS.md
+
+**Wat is gebouwd:** de vier prijsvelden zijn hernoemd (`Part.salePrice` →
+`salePriceIncl`, `Part.purchasePrice` → `purchasePriceExcl`, `Sale.salePriceAtSale` →
+`salePriceInclAtSale`, `Sale.purchasePriceAtSale` → `purchasePriceExclAtSale`) en de
+verkoopprijs betekent voortaan INCLUSIEF btw. Verder: `Part.supplierArticleNumber`
+met index, het nieuwe model `StockMutation` met de enum `StockMutationReason`, en een
+schemacomment dat uitlegt waarom er geen "wie" wordt vastgelegd (één gedeeld
+wachtwoord, geen gebruikersaccounts — dus alleen wanneer, wat en waarom). De
+migratie is met de hand geschreven: eerst `ALTER TABLE ... RENAME COLUMN` (zodat de
+waarden behouden blijven — `prisma migrate diff` had er DROP + ADD van gemaakt en
+alle prijzen weggegooid), dan `UPDATE ... SET "salePriceIncl" = ROUND("salePriceIncl"
+* (1 + "vatRate"/100), 2)` en hetzelfde op `Sale` met `vatRateAtSale`, en pas daarna
+de nieuwe kolom, enum, tabel, indexen en CHECK-constraints. De namen van de twee
+CHECK-constraints op de prijskolommen zijn meegehernoemd (Postgres past de expressie
+aan, de naam niet). In de codebase is overal het onderscheid excl./incl. expliciet
+gemaakt: `@/lib/money` heeft een nieuwe `priceExclVat()`, de DTO's dragen het
+onderscheid in hun veldnaam (`purchasePriceExcl`, `salePriceIncl`, `salePriceExcl`,
+`salePriceInclAtSale`, `salePriceExclAtSale`, `stockValuePurchaseExcl`,
+`stockValueSaleExcl`), en marge en rapportages rekenen aantoonbaar nog steeds op
+excl.-basis (SPEC §3 regel 0).
+
+**Keuzes en afwijkingen:**
+- **Marge en omzet in SQL.** `reports.ts` bouwde omzet en marge zes keer op uit
+  `salePriceAtSale`. Die expressie staat nu één keer in een `Prisma.Sql`-fragment
+  (`SALE_PRICE_EXCL_SQL` = `ROUND(s."salePriceInclAtSale" / (1 + s."vatRateAtSale" /
+  100), 2)`) dat in alle zes query's wordt geïnterpoleerd. Zes losse kopieën was de
+  zekerste manier om er ooit één te vergeten. Er wordt met `vatRateAtSale` gerekend,
+  niet met het huidige tarief van het onderdeel: een tariefwijziging mag de omzet van
+  vorig kwartaal niet herschrijven.
+- **Per stuk afronden, dan vermenigvuldigen.** Zowel in `getStockValue` als in de
+  rapportages wordt het excl.-bedrag per stuk op centen afgerond vóór de
+  vermenigvuldiging met het aantal. Anders kan een totaal een paar cent afwijken van
+  de som van de regelbedragen die de gebruiker in de UI ziet — precies het verschil
+  waar een eigenaar over valt.
+- **Het formulier voert de verkoopprijs nu INCL. btw in.** Dat kon niet wachten op
+  T18: het veld schrijft rechtstreeks naar `salePriceIncl`, dus een excl.-invoer zou
+  vanaf nu verkeerde data opslaan. Beide prijsvelden hebben een expliciet label en
+  helptekst gekregen; de live preview toont niet meer het incl.-bedrag maar het
+  afgeleide **excl.**-bedrag (een afgeleid incl.-bedrag uit een incl.-invoer zou
+  onzin zijn). De marge in de preview blijft op excl.-basis.
+- **Labels waar het getoonde bedrag van betekenis veranderde.** Op de
+  leveranciersdetailpagina stond een kolom "Verkoopprijs" met de opgeslagen waarde;
+  die heet nu "Verkoopprijs (incl. btw)". Het voorraadoverzicht, de detailpagina, het
+  verkoopscherm en het dashboard tonen nog steeds excl. als hoofdbedrag (dat is T18),
+  maar rekenen dat bedrag nu bewust af uit `salePriceIncl`.
+- **`Sale.saleId` in `StockMutation` is geen foreign key.** Zo blijft het grootboek
+  overeind als een verkoopregel ooit gecorrigeerd wordt; een verwijderde `Sale` mag de
+  mutatie niet meeslepen.
+- **De seed kreeg een consistent grootboek.** De lage eindstand van de zes
+  lage-voorraadonderdelen wordt niet meer los bovenop de simulatie gezet (dat zou het
+  grootboek onverklaarbaar maken), maar de BEGINSTAND wordt verlaagd naar "gewenste
+  eindstand + alles wat verkocht is". De verkopen worden chronologisch doorlopen, en
+  de seed rekent aan het eind na of de mutatiereeks per onderdeel exact op de
+  `stockQuantity` van dat onderdeel uitkomt; zo niet, dan faalt hij hard.
+- **Verkoopprijzen in de seed zijn echte kaartjesprijzen geworden** (bv. € 29,95 waar
+  eerst € 24,95 excl. stond), geen mechanisch omgerekende bedragen. 33 van de 40
+  onderdelen hebben een `supplierArticleNumber` (bv. "PIA-4T-8412"); bulkdelen zonder
+  gedrukt nummer hebben het bewust niet.
+- **Twee dingen buiten de taak aangeraakt, beide omdat ze de Definition of Done
+  blokkeerden** — zie "Openstaand / risico's".
+
+**Bewust niet gedaan (ligt bij T18/T19):**
+- Incl. btw als hóófdbedrag in de UI, de inkoopprijs incl. erbij, de
+  incl./excl.-schakelaar bij de inkoopprijs, en het aanpassen van teksten als "alle
+  bedragen exclusief btw" op het dashboard. Dat is letterlijk T18.
+- `StockMutation` wordt nog door geen enkele schermactie geschreven: niet door
+  `registerSale` en niet door het onderdeelformulier. T17 vraagt alleen het schema en
+  een consistent grootboek in de seed. **Let op: hierdoor loopt het grootboek vanaf
+  nu achter op de werkelijkheid** — zie "Openstaand / risico's".
+- Geen datalaag, query's of UI voor `StockMutation`; geen scherm dat het grootboek
+  toont.
+- SPEC §4 is niet bijgewerkt (staat nog met `salePrice`/`purchasePrice` en zonder de
+  nieuwe modellen). Dat is het werk van de projectmanager (CLAUDE.md: rolverdeling).
+
+**Verificatie:** alles gedraaid tegen de lokale Postgres op poort 5433; Neon is niet
+aangeraakt.
+
+| Stap | Uitkomst |
+|---|---|
+| `npx prisma validate` | "The schema at prisma/schema.prisma is valid" |
+| `npx prisma generate` | slaagt |
+| `npx prisma migrate deploy` | "Applying migration 20260930000000_datamodel_v2" → "All migrations have been successfully applied." |
+| `npm run db:seed` (2×) | beide keren identiek: 25 merken, 4 leveranciers, 40 onderdelen (9 onder minimum), 86 verkopen (57 balie, 29 werkplaats), 126 mutaties, "grootboek sluit aan op de voorraadstand van elk onderdeel" |
+| `npx tsc --noEmit` | 0 fouten |
+| `npx vitest run` | 339 tests groen, 13 bestanden (was 332; 7 nieuwe tests op `priceExclVat`) |
+| `npx eslint .` | schoon |
+| `npx next build` | slaagt, alle `(app)`-routes dynamisch |
+| Rendertest (7 pagina's) | alle zeven HTTP 200 met echte data |
+
+**Bewijs van de omzetting** (drie onderdelen, waarden vóór de migratie uit de
+database gelezen en erna opnieuw opgevraagd):
+
+| SKU | oud `salePrice` (excl.) | btw | verwacht `ROUND(oud × 1,21; 2)` | nieuw `salePriceIncl` |
+|---|---|---|---|---|
+| SCO-VES-001 (Remblokkenset voorzijde) | € 24,95 | 21% | € 30,19 | **€ 30,19** |
+| UNI-OIL-034 (Motorolie 10W-40 1L) | € 10,95 | 21% | € 13,25 | **€ 13,25** |
+| EBK-NIU-013 (Accupack 12V lithium) | € 249,00 | 21% | € 301,29 | **€ 301,29** |
+
+Over álle rijen gecontroleerd: 0 `Part`-rijen en 0 `Sale`-rijen waar het
+terugrekenen meer dan één cent afwijkt. En het belangrijkste getal: de omzet excl.
+btw over de hele verkoophistorie was vóór de migratie **€ 11.764,85** (marge
+€ 5.326,10) en is met de nieuwe afleiding **exact gelijk** gebleven —
+€ 11.764,85 / € 5.326,10. De migratie is dus rapportageneutraal.
+
+**Rendertest** (sessiecookie via de eigen `createSessionValue()`, nergens een
+wachtwoord in een formulier getypt): `/`, `/onderdelen`, `/onderdelen/nieuw`,
+`/verkoop`, `/leveranciers`, `/merken` en `/rapportages` geven alle zeven **200** met
+echte data in de HTML. Aanvullend ook `/onderdelen/[id]`,
+`/onderdelen/[id]/bewerken`, `/leveranciers/[id]` en `/rapportages/export` (200).
+Serverlog en browserconsole zonder fouten. Steekproef op één onderdeel bewijst dat de
+getoonde bedragen kloppen: opgeslagen € 29,95 incl. bij 21% → detailpagina toont
+inkoop € 12,50 excl., verkoop € 24,75 excl. / € 29,95 incl., marge € 12,25 (24,75 −
+12,50, dus excl.-basis). Het bewerkformulier laadt € 29,95 terug in het
+incl.-veld — een rondgang zonder centverlies. De CSV-export kopregel is nog "Omzet
+excl. btw / Marge excl. btw" met bedragen die daarmee overeenkomen (regel:
+Remvloeistof DOT4, 5 stuks, omzet 39,25, marge 21,75 — klopt met 9,50 incl. / 1,21 ×
+5 en inkoop 3,50 × 5).
+
+Ook echt tegen de database uitgevoerd, niet alleen gemockt: `registerSale()` van 2
+stuks "Spiegel links" legde `salePriceInclAtSale` 16,95 en
+`purchasePriceExclAtSale` 6,75 vast, gaf `salePriceExclAtSale` 14,01,
+`lineTotalInclVat` 33,90 (exact) en `lineTotalExclVat` 28,02, en verlaagde de
+voorraad van 41 naar 39. Een poging om 2 stuks van een onderdeel met voorraad 0 te
+verkopen werd geweigerd met `INSUFFICIENT_STOCK` (SPEC §3 regel 6). Daarna is de
+database opnieuw geseed.
+
+**Mobiel:** niet opnieuw visueel gecontroleerd. De lay-out is niet structureel
+gewijzigd: alleen labels, veldnamen en twee regels `helpText` in het bestaande
+`Input`-component. Dat is de eerlijke stand — visuele controle op 375px van de
+schermen zelf staat nog open uit reviewronde 3 en verandert door T18 alsnog.
+
+**Openstaand / risico's:**
+1. **Het grootboek loopt vanaf nu achter.** `registerSale()` schrijft géén
+   `StockMutation`, en het onderdeelformulier schrijft geen `INITIAL`-regel. Na de
+   seed is het grootboek sluitend, maar elke verkoop en elk nieuw onderdeel daarna
+   maakt het onvolledig. T19 dekt alleen de knoppen voor "snel voorraad aanpassen",
+   niet de verkoopactie. Genoteerd onder Nieuwe wensen / observaties in TASKS.md;
+   dit hoort een eigen taak te worden vóór T19 in gebruik gaat.
+2. **De "zeldzame flake" in `auth.test.ts` was geen flake maar een testfout, en is
+   gerepareerd.** De test knoeide met het LAATSTE teken van de base64url-handtekening.
+   Een handtekening van 32 bytes is 43 tekens van 6 bits = 258 bits; het laatste
+   teken draagt maar 2 betekenisvolle bits. "A", "B", "C" en "D" decoderen daardoor
+   naar exact dezelfde 32 bytes, dus in ~6% van de runs (4 van de 64 mogelijke
+   laatste tekens) veranderde de knoei de handtekening niet en accepteerde
+   `verifySessionValue` hem terecht. De test knoeit nu met het EERSTE teken (altijd 6
+   betekenisvolle bits) en bewijst met een extra assertie dat er echt andere bytes
+   uitkomen. Acht losse runs achter elkaar: 54/54 groen. Geen productiecode
+   gewijzigd, geen assertie verzwakt — de test is strenger geworden.
+3. **`eslint.config.mjs`:** `next-env.d.ts` staat nu in `ignores`. Dat bestand is door
+   Next.js gegenereerd, staat in `.gitignore` en zegt zelf "should not be edited";
+   sinds de Next-upgrade naar 15.5.27 (commit 254f965) zet de generator er een
+   `/// <reference path=...>` in, waar `@typescript-eslint/triple-slash-reference`
+   op afging. Dit was pre-existent en blokkeerde `npm run lint`. Niets aan te
+   verhelpen in een gegenereerd bestand, dus uitgesloten van linting.
+4. **Leftover debugcode in `src/app/(app)/verkoop/page.tsx`**, niet van deze taak en
+   niet aangeraakt behalve de veldnamen: twee blokken met de opmerking `// TIJDELIJK`
+   — een hardgecodeerd demo-onderdeel dat verschijnt bij de zoekterm "demo", en een
+   `.catch(() => [])` om `listRecentSales` die elke databasefout stil wegslikt.
+   Genoteerd onder Nieuwe wensen / observaties.
+5. **De productiedatabase (Neon) is bewust niet aangeraakt** — dat staat zo in de
+   opdracht. Het acceptatiecriterium "`prisma migrate deploy` slaagt tegen Neon" is
+   dus nog **niet** afgevinkt en moet door de projectmanager gedaan worden. Let op:
+   de productiedatabase bevat 0 onderdelen, dus de omrekenende `UPDATE`s raken daar
+   geen rijen; de hernoeming zelf moet er wel slagen.
+6. **Werkwijzegotcha voor de volgende sessie:** `npx next build` en `next dev` delen
+   dezelfde `.next`-map. Een build terwijl de dev-server op 3111 draait vervangt de
+   dev-output, waarna elke pagina 500 geeft met `Cannot find module './897.js'` —
+   dat lijkt op een echte bug maar is het niet. Eerst bouwen, dan de dev-server
+   (her)starten en dan de rendertest doen. De hier gerapporteerde rendertest is ná
+   een herstart gedraaid en twee keer achter elkaar herhaald.
+7. **Wat de reviewer extra moet bekijken:** of de gekozen verkoopprijzen in de seed
+   acceptabel zijn (ze zijn niet mechanisch omgerekend), en of het per stuk afronden
+   vóór vermenigvuldigen de gewenste conventie is voor de voorraadwaarde en de
+   rapportagetotalen.
+
+---
+
 ## [FIX] Voorraadpagina: pure helpers uit client-module gehaald — 2026-09-22
 **Status:** klaar voor review
 

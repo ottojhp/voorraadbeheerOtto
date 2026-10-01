@@ -146,7 +146,7 @@ export default async function LeverancierDetailPagina({ params }: PageProps) {
                   <TableHeaderCell>SKU</TableHeaderCell>
                   <TableHeaderCell>Voorraad</TableHeaderCell>
                   <TableHeaderCell>Min. voorraad</TableHeaderCell>
-                  <TableHeaderCell>Verkoopprijs</TableHeaderCell>
+                  <TableHeaderCell>Verkoopprijs (incl. btw)</TableHeaderCell>
                 </tr>
               </TableHead>
               <TableBody>
@@ -167,7 +167,7 @@ export default async function LeverancierDetailPagina({ params }: PageProps) {
                       {new Intl.NumberFormat("nl-NL", {
                         style: "currency",
                         currency: "EUR",
-                      }).format(part.salePrice)}
+                      }).format(part.salePriceIncl)}
                     </TableCell>
                   </tr>
                 ))}
@@ -191,7 +191,8 @@ export default async function LeverancierDetailPagina({ params }: PageProps) {
                     {new Intl.NumberFormat("nl-NL", {
                       style: "currency",
                       currency: "EUR",
-                    }).format(part.salePrice)}
+                    }).format(part.salePriceIncl)}{" "}
+                    incl. btw
                   </p>
                 </Card>
               ))}

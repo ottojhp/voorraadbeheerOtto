@@ -1,6 +1,6 @@
 # SPEC — Voorraadbeheer Scooter- & Motoronderdelen
 
-Versie: 1.1 — laatst bijgewerkt: 2026-09-21
+Versie: 2.0 — laatst bijgewerkt: 2026-09-30
 Status: vastgesteld, basis voor `docs/TASKS.md`
 
 ---
@@ -53,12 +53,18 @@ Server Components via een datalaag in `src/lib/`.
 
 ## 3. Architectuurregels (bindend)
 
-0. **Btw:** alle prijzen worden **exclusief btw** opgeslagen, zowel inkoop als
-   verkoop. Elk product heeft een eigen `vatRate` (default 21). De prijs inclusief btw
-   wordt afgeleid (`salePrice * (1 + vatRate / 100)`) en alleen getoond, nooit
-   opgeslagen. Marge, omzet en rapportages rekenen **altijd** met bedragen exclusief
-   btw. Reden: inkoopfacturen zijn excl. btw; excl. met incl. vergelijken maakt elke
-   marge ongeveer 21% te hoog.
+0. **Btw (gewijzigd in v2.0):** de **verkoopprijs wordt inclusief btw opgeslagen**, de
+   **inkoopprijs exclusief**. Elk product heeft een eigen `vatRate` (default 21).
+   - Reden verkoop incl.: dat is het bedrag dat de winkel vaststelt en de klant betaalt,
+     en het moet exact blijven. Excl. opslaan in twee decimalen verliest centen bij het
+     terugrekenen: €10,00 incl. bij 21% wordt 8,264462… → opgeslagen 8,26 → terug €9,99.
+   - Reden inkoop excl.: leveranciersfacturen zijn exclusief btw.
+   - **Marge en rapportages rekenen altijd met bedragen exclusief btw**, want btw is geen
+     winst. Verkoop excl. wordt afgeleid: `salePriceIncl / (1 + vatRate / 100)`.
+   - De afgeleide waarde mag afwijken in de orde van een halve cent. Dat is aanvaard: het
+     is een stuurgetal, geen bedrag dat iemand betaalt.
+   - Veldnamen dragen de betekenis (`salePriceIncl`, `purchasePriceExcl`), zodat een
+     verwarring tussen de twee een compilerfout geeft in plaats van een stille rekenfout.
 1. **Geldbedragen** worden in de database opgeslagen als `Decimal @db.Decimal(10,2)`
    in euro's. Prisma geeft `Decimal`-objecten terug; die mogen **nooit** rechtstreeks
    naar een client component. De datalaag mapt altijd naar een plain DTO met `number`
@@ -118,9 +124,10 @@ Nederlands).
 | category | Category | enum, verplicht, zie hieronder |
 | sku | String @unique | intern artikelnummer, verplicht |
 | barcode | String? @unique | EAN/QR, optioneel, uniek indien gevuld |
-| purchasePrice | Decimal(10,2) | inkoopprijs **excl. btw** |
-| salePrice | Decimal(10,2) | verkoopprijs **excl. btw** |
+| purchasePriceExcl | Decimal(10,2) | inkoopprijs **excl. btw** (facturen zijn excl.) |
+| salePriceIncl | Decimal(10,2) | verkoopprijs **incl. btw**; dit is de opgeslagen waarheid |
 | vatRate | Decimal(5,2) @default(21) | btw-percentage |
+| supplierArticleNumber | String? | artikelnummer van leverancier/fabrikant, doorzoekbaar, gebruikt door de OCR-scan |
 | stockQuantity | Int @default(0) | |
 | minStock | Int @default(0) | drempel voor lage-voorraadmelding |
 | supplierId | String? | relatie → Supplier, optioneel |
@@ -143,8 +150,8 @@ Vast lijstje in v1, geen eigen CRUD:
 | id | String @id @default(cuid()) | |
 | partId | String | relatie → Part |
 | quantity | Int | > 0 |
-| salePriceAtSale | Decimal(10,2) | verkoopprijs excl. btw per stuk op moment van verkoop |
-| purchasePriceAtSale | Decimal(10,2) | inkoopprijs excl. btw per stuk op moment van verkoop |
+| salePriceInclAtSale | Decimal(10,2) | verkoopprijs **incl. btw** per stuk op moment van verkoop |
+| purchasePriceExclAtSale | Decimal(10,2) | inkoopprijs **excl. btw** per stuk op moment van verkoop |
 | vatRateAtSale | Decimal(5,2) | btw-tarief op moment van verkoop, zodat het incl.-bedrag reconstrueerbaar blijft |
 | channel | SaleChannel | `COUNTER` (balie) of `WORKSHOP` (verbruikt in een reparatie) |
 | reference | String? | vrije verwijzing naar de werkorder. **Geen persoonsgegevens**: geen klantnaam, geen kenteken (AVG) |
@@ -156,6 +163,27 @@ Indexen: `partId`, `soldAt`, `channel`.
 Een `Sale` met `channel = WORKSHOP` is geen verkoop over de balie maar voorraadverbruik
 in de werkplaats. Het verlaagt de voorraad op dezelfde manier en telt mee in de
 bestsellers, maar wordt in rapportages apart uitgesplitst van balieomzet.
+
+### StockMutation (Voorraadmutatie) — v2.0
+Grootboek van elke voorraadwijziging.
+
+| Veld | Type | Opmerking |
+|---|---|---|
+| id | String @id @default(cuid()) | |
+| partId | String | relatie → Part, onDelete Restrict |
+| delta | Int | verschil, positief of negatief, nooit 0 |
+| quantityBefore / quantityAfter | Int | standen vóór en na; `after = before + delta` |
+| reason | StockMutationReason | DELIVERY, CORRECTION, COUNT, SALE, WORKSHOP, INITIAL |
+| note | String? | vrije toelichting, geen persoonsgegevens |
+| saleId | String? | gevuld als de mutatie bij een verkoop hoort |
+| createdAt | DateTime | |
+
+**Er wordt geen "wie" vastgelegd.** De applicatie heeft één gedeeld wachtwoord en geen
+gebruikersaccounts, dus een persoon is niet vast te stellen. Alleen wanneer, wat en waarom.
+
+**Elke voorraadwijziging schrijft een mutatieregel, in dezelfde transactie als de
+wijziging zelf.** Een grootboek met gaten is erger dan geen grootboek: je kunt er niet
+mee reconstrueren en het wekt valse zekerheid.
 
 ### Afgeleide waarden (niet opslaan, altijd berekenen)
 Alle bedragen exclusief btw, tenzij expliciet anders vermeld.

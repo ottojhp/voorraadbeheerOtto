@@ -39,9 +39,10 @@ import { BarcodeScanner } from "@/components/BarcodeScanner";
 import { Button } from "@/components/Button";
 import { Card } from "@/components/Card";
 import { ErrorMessage } from "@/components/ErrorMessage";
+import { PriceWithVat } from "@/components/PriceWithVat";
 import { SALE_CHANNEL_LABELS, type SaleChannel } from "@/lib/labels";
 import type { PartSaleOptionDTO } from "@/lib/queries/types";
-import { formatEuro } from "@/lib/money";
+import { calcLineTotal, formatEuro } from "@/lib/money";
 
 import { QuantityStepper } from "./QuantityStepper";
 import { registerSaleAction, type SaleFormState } from "./actions";
@@ -181,8 +182,17 @@ export function SaleScreen({
             <span className="font-semibold">
               {state.result.newStockQuantity}
             </span>{" "}
-            stuks &middot; {formatEuro(state.result.lineTotalExclVat)} excl. btw (
-            {formatEuro(state.result.lineTotalInclVat)} incl.)
+            stuks
+          </p>
+          {/* Het betaalde bedrag (incl. btw) is het hoofdbedrag (T18). */}
+          <p className="mt-1 text-sm text-green-800">
+            Afgerekend:{" "}
+            <span className="font-semibold">
+              {formatEuro(state.result.lineTotalInclVat)} incl. btw
+            </span>{" "}
+            <span className="whitespace-nowrap text-xs">
+              ({formatEuro(state.result.lineTotalExclVat)} excl. btw)
+            </span>
           </p>
           {state.result.reference && (
             <p className="mt-1 text-sm text-green-800">
@@ -281,9 +291,12 @@ export function SaleScreen({
                     {part.brandName ?? "Universeel"} &middot; {part.sku}
                   </span>
                   <span className="text-sm text-gray-700">
-                    {part.stockQuantity} op voorraad &middot;{" "}
-                    {formatEuro(part.salePrice)} excl. btw
+                    {part.stockQuantity} op voorraad
                   </span>
+                  <PriceWithVat
+                    incl={part.salePriceIncl}
+                    excl={part.salePriceExcl}
+                  />
                 </button>
               </li>
             ))}
@@ -349,14 +362,13 @@ export function SaleScreen({
                 </dd>
               </div>
               <div>
-                <dt className="text-gray-500">
-                  Verkoopprijs (excl. / incl. btw)
-                </dt>
-                <dd className="text-base font-semibold text-gray-900">
-                  {formatEuro(selectedPart.salePrice)}
-                  <span className="ml-1 text-sm font-normal text-gray-600">
-                    / {formatEuro(selectedPart.salePriceInclVat)}
-                  </span>
+                <dt className="text-gray-500">Verkoopprijs per stuk</dt>
+                <dd>
+                  <PriceWithVat
+                    incl={selectedPart.salePriceIncl}
+                    excl={selectedPart.salePriceExcl}
+                    size="md"
+                  />
                 </dd>
               </div>
             </dl>
@@ -446,14 +458,17 @@ export function SaleScreen({
               />
             </div>
 
-            <p className="mt-3 text-sm text-gray-700">
-              Totaal:{" "}
-              <span className="font-semibold">
-                {formatEuro(selectedPart.salePrice * quantity)}
-              </span>{" "}
-              excl. btw ({formatEuro(selectedPart.salePriceInclVat * quantity)}{" "}
-              incl.)
-            </p>
+            {/* Het totaal dat de klant betaalt staat voorop (T18); het
+                excl.-stuurgetal eronder. */}
+            <div className="mt-3 flex items-baseline justify-between gap-2">
+              <span className="text-sm text-gray-700">Totaal</span>
+              <PriceWithVat
+                incl={calcLineTotal(selectedPart.salePriceIncl, quantity)}
+                excl={calcLineTotal(selectedPart.salePriceExcl, quantity)}
+                size="md"
+                align="right"
+              />
+            </div>
 
             {outOfStock && (
               <p className="mt-2 text-sm font-medium text-red-700">

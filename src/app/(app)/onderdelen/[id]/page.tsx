@@ -5,6 +5,7 @@ import { notFound } from "next/navigation";
 import { Badge } from "@/components/Badge";
 import { Card } from "@/components/Card";
 import { PageHeader } from "@/components/PageHeader";
+import { MarginBasisNote, PriceWithVat } from "@/components/PriceWithVat";
 import { CATEGORY_LABELS } from "@/lib/labels";
 import { formatEuro } from "@/lib/money";
 import { getPartById } from "@/lib/queries/parts";
@@ -35,8 +36,9 @@ const CONFIRMATION_MESSAGES: Record<string, string> = {
 };
 
 /**
- * Detailpagina van een onderdeel (SPEC §F3, T08): alle gegevens, marge, prijzen
- * excl./incl. btw, voorraadstand, leverancier (met link naar `/leveranciers/[id]`,
+ * Detailpagina van een onderdeel (SPEC §F3, T08): alle gegevens, marge, prijzen met
+ * het incl.-bedrag als hoofdbedrag en het excl.-bedrag eronder (T18, via
+ * `PriceWithVat`), voorraadstand, leverancier (met link naar `/leveranciers/[id]`,
  * T13) en knoppen naar bewerken en archiveren. Toont een duidelijke melding na
  * aanmaken/bewerken/archiveren via `?opgeslagen=` (gezet door de server actions in
  * `../actions.ts`, die na afloop hierheen redirecten) en een duidelijke markering als
@@ -156,27 +158,38 @@ export default async function OnderdeelDetailPagina({
 
         <Card title="Prijs en voorraad">
           <dl className="grid gap-3 sm:grid-cols-2">
+            {/* Prijzen in de vaste T18-vorm: incl. btw als hoofdbedrag, excl. btw
+                kleiner eronder — voor de verkoopprijs én de inkoopprijs. */}
             <div>
-              <dt className="text-sm text-gray-500">Inkoopprijs (excl. btw)</dt>
-              <dd className="text-gray-900">{formatEuro(part.purchasePrice)}</dd>
+              <dt className="text-sm text-gray-500">Verkoopprijs</dt>
+              <dd>
+                <PriceWithVat
+                  incl={part.salePriceIncl}
+                  excl={part.salePriceExcl}
+                  size="md"
+                />
+              </dd>
+            </div>
+            <div>
+              <dt className="text-sm text-gray-500">Inkoopprijs</dt>
+              <dd>
+                <PriceWithVat
+                  incl={part.purchasePriceIncl}
+                  excl={part.purchasePriceExcl}
+                  size="md"
+                />
+              </dd>
             </div>
             <div>
               <dt className="text-sm text-gray-500">Btw-tarief</dt>
               <dd className="text-gray-900">{part.vatRate}%</dd>
             </div>
             <div>
-              <dt className="text-sm text-gray-500">Verkoopprijs (excl. btw)</dt>
-              <dd className="text-gray-900">{formatEuro(part.salePrice)}</dd>
-            </div>
-            <div>
-              <dt className="text-sm text-gray-500">Verkoopprijs (incl. btw)</dt>
-              <dd className="text-gray-900">{formatEuro(part.salePriceInclVat)}</dd>
-            </div>
-            <div>
               <dt className="text-sm text-gray-500">Marge (excl. btw)</dt>
-              <dd className="text-gray-900">
+              <dd className="font-semibold text-gray-900">
                 {formatEuro(part.margin)} ({part.marginPct.toFixed(1).replace(".", ",")}%)
               </dd>
+              <MarginBasisNote className="mt-0.5" />
             </div>
             <div>
               <dt className="text-sm text-gray-500">Voorraad</dt>

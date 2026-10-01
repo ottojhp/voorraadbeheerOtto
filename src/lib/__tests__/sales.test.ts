@@ -43,6 +43,9 @@ const { prismaMock, txMock } = vi.hoisted(() => {
     sale: {
       create: vi.fn(),
     },
+    stockMutation: {
+      create: vi.fn(),
+    },
   };
 
   const prismaMock = {
@@ -72,8 +75,9 @@ function partRow(overrides: Record<string, unknown> = {}) {
     name: "Remblokset voor",
     sku: "REM-001",
     stockQuantity: 8,
-    purchasePrice: new Prisma.Decimal("12.50"),
-    salePrice: new Prisma.Decimal("24.95"),
+    purchasePriceExcl: new Prisma.Decimal("12.50"),
+    // INCL. btw (datamodel v2): 30,19 incl. is 24,95 excl. bij 21%.
+    salePriceIncl: new Prisma.Decimal("30.19"),
     vatRate: new Prisma.Decimal("21.00"),
     archivedAt: null,
     brand: { name: "Vespa" },
@@ -96,6 +100,7 @@ function arrangeSuccess(options: {
     id: options.saleId ?? "sale_1",
     soldAt: SOLD_AT,
   });
+  txMock.stockMutation.create.mockResolvedValue({ id: "mut_1" });
   return part;
 }
 
@@ -119,6 +124,15 @@ function expectSaleError(error: unknown, code: SaleErrorCode): SaleError {
 /** De argumenten waarmee `sale.create` is aangeroepen. */
 function saleCreateData(): Record<string, unknown> {
   const call = txMock.sale.create.mock.calls[0]?.[0] as
+    | { data: Record<string, unknown> }
+    | undefined;
+  expect(call).toBeDefined();
+  return call!.data;
+}
+
+/** De argumenten waarmee `stockMutation.create` is aangeroepen. */
+function stockMutationData(): Record<string, unknown> {
+  const call = txMock.stockMutation.create.mock.calls[0]?.[0] as
     | { data: Record<string, unknown> }
     | undefined;
   expect(call).toBeDefined();
@@ -161,8 +175,10 @@ describe("registerSale — succespad balie", () => {
     const data = saleCreateData();
     expect(data.partId).toBe("part_1");
     expect(data.quantity).toBe(2);
-    expect(String(data.salePriceAtSale)).toBe("24.95");
-    expect(String(data.purchasePriceAtSale)).toBe("12.5");
+    // De prijzen gaan ONGEWIJZIGD mee: verkoop incl. btw, inkoop excl. btw. Een
+    // tussentijdse omrekening zou hier een cent kunnen kosten (SPEC §3 regel 0).
+    expect(String(data.salePriceInclAtSale)).toBe("30.19");
+    expect(String(data.purchasePriceExclAtSale)).toBe("12.5");
     expect(String(data.vatRateAtSale)).toBe("21");
     expect(data.channel).toBe("COUNTER");
     expect(data.reference).toBeNull();
@@ -173,9 +189,11 @@ describe("registerSale — succespad balie", () => {
     expect(sale.partName).toBe("Remblokset voor");
     expect(sale.brandName).toBe("Vespa");
     expect(sale.quantity).toBe(2);
-    expect(sale.salePriceAtSale).toBe(24.95);
+    expect(sale.salePriceInclAtSale).toBe(30.19);
+    expect(sale.salePriceExclAtSale).toBe(24.95);
     expect(sale.vatRateAtSale).toBe(21);
     expect(sale.lineTotalExclVat).toBeCloseTo(49.9, 2);
+    // Het incl.-totaal is een exacte vermenigvuldiging van het betaalde bedrag.
     expect(sale.lineTotalInclVat).toBe(60.38);
     expect(sale.soldAt).toBe(SOLD_AT.toISOString());
   });
@@ -189,10 +207,11 @@ describe("registerSale — succespad balie", () => {
       channel: "COUNTER",
     });
 
-    expect(typeof sale.salePriceAtSale).toBe("number");
+    expect(typeof sale.salePriceInclAtSale).toBe("number");
+    expect(typeof sale.salePriceExclAtSale).toBe("number");
     expect(typeof sale.vatRateAtSale).toBe("number");
     expect(typeof sale.soldAt).toBe("string");
-    expect(sale.salePriceAtSale).not.toBeInstanceOf(Prisma.Decimal);
+    expect(sale.salePriceInclAtSale).not.toBeInstanceOf(Prisma.Decimal);
   });
 
   it("negeert een referentie bij een baliesverkoop", async () => {
@@ -332,6 +351,185 @@ describe("registerSale — verloren race", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Voorraadgrootboek (StockMutation) — T22
+// ---------------------------------------------------------------------------
+
+describe("registerSale — grootboekregel", () => {
+  it("schrijft een SALE-mutatie met kloppende before/after en de saleId", async () => {
+    arrangeSuccess({ newStock: 6 });
+
+    await registerSale({ partId: "part_1", quantity: 2, channel: "COUNTER" });
+
+    const data = stockMutationData();
+    expect(data.partId).toBe("part_1");
+    // Een verkoop haalt voorraad WEG: delta is negatief.
+    expect(data.delta).toBe(-2);
+    // De stand ná de update is de waarheid (6); de stand ervóór volgt uit het
+    // relatieve decrement: 6 + 2 = 8.
+    expect(data.quantityAfter).toBe(6);
+    expect(data.quantityBefore).toBe(8);
+    // De CHECK-constraint in de database eist exact deze gelijkheid.
+    expect(data.quantityAfter).toBe(
+      (data.quantityBefore as number) + (data.delta as number),
+    );
+    expect(data.reason).toBe("SALE");
+    expect(data.saleId).toBe("sale_1");
+
+    // SPEC §3 regel 5: de mutatie hoort in DEZELFDE transactie als de verkoop.
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+    expect(txMock.stockMutation.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("gebruikt reason WORKSHOP bij werkplaatsverbruik en legt de referentie vast", async () => {
+    arrangeSuccess({ newStock: 5, saleId: "sale_ws" });
+
+    await registerSale({
+      partId: "part_1",
+      quantity: 3,
+      channel: "WORKSHOP",
+      reference: "WO-2026-0412",
+    });
+
+    const data = stockMutationData();
+    expect(data.reason).toBe("WORKSHOP");
+    expect(data.delta).toBe(-3);
+    expect(data.quantityAfter).toBe(5);
+    expect(data.quantityBefore).toBe(8);
+    expect(data.saleId).toBe("sale_ws");
+    expect(data.note).toBe("WO-2026-0412");
+  });
+
+  it("leidt de stand vóór de mutatie af uit de stand ná de update, niet uit de eerste lezing", async () => {
+    // Scenario: tussen de eerste lezing (8 stuks) en onze UPDATE komt er een levering
+    // van 4 stuks binnen. De stand ná onze verkoop van 2 is dan 10, niet 6.
+    arrangeSuccess({ newStock: 10 });
+
+    const { sale } = await registerSale({
+      partId: "part_1",
+      quantity: 2,
+      channel: "COUNTER",
+    });
+
+    const data = stockMutationData();
+    // De grootboekregel beschrijft uitsluitend onze eigen mutatie (-2) rond de
+    // werkelijke standen (12 → 10), en niet de verouderde 8 uit de eerste lezing.
+    expect(data.quantityAfter).toBe(10);
+    expect(data.quantityBefore).toBe(12);
+    expect(data.delta).toBe(-2);
+    expect(sale.newStockQuantity).toBe(10);
+  });
+
+  it("draait alles terug als het schrijven van de mutatie faalt", async () => {
+    arrangeSuccess({ newStock: 6 });
+    txMock.stockMutation.create.mockRejectedValue(
+      new Error("grootboek niet beschikbaar"),
+    );
+
+    const error = await captureError({
+      partId: "part_1",
+      quantity: 2,
+      channel: "COUNTER",
+    });
+
+    // De fout borrelt uit de transactiecallback omhoog; in Postgres betekent dat een
+    // ROLLBACK van de voorraadverlaging én de verkoopregel. Er mag nooit een
+    // voorraadwijziging zonder grootboekregel overblijven (SPEC §4).
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("grootboek");
+  });
+
+  it("gooit en schrijft geen mutatie als de stand na de update niet leesbaar is", async () => {
+    // Zou niet kunnen (de UPDATE houdt een rijslot), maar een gok zou een
+    // grootboekregel met verzonnen standen opleveren.
+    txMock.part.findUnique
+      .mockResolvedValueOnce(partRow())
+      .mockResolvedValueOnce(null);
+    txMock.part.updateMany.mockResolvedValue({ count: 1 });
+    txMock.sale.create.mockResolvedValue({ id: "sale_1", soldAt: SOLD_AT });
+
+    const error = await captureError({
+      partId: "part_1",
+      quantity: 2,
+      channel: "COUNTER",
+    });
+
+    expect(error).toBeInstanceOf(Error);
+    expect(txMock.stockMutation.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("registerSale — grootboek sluit aan op de voorraad", () => {
+  interface MutationRow {
+    delta: number;
+    quantityBefore: number;
+    quantityAfter: number;
+    reason: string;
+  }
+
+  /**
+   * Bewijst het invariant van T22 tegen een piepkleine in-memory "database": de som
+   * van alle `delta`'s van een onderdeel is na een verkoop exact gelijk aan zijn
+   * `stockQuantity`. De voorraad en het grootboek worden hier door dezelfde
+   * nagebootste transactie bijgehouden, dus als `registerSale` de mutatie zou
+   * vergeten of met een verkeerde delta zou schrijven, loopt de som uit de pas.
+   */
+  it("som van alle delta's is gelijk aan de voorraadstand, ook na twee verkopen", async () => {
+    const store = {
+      stock: 8,
+      // Het grootboek opent met de beginstand, precies zoals de seed en
+      // `createPartAction` dat doen.
+      mutations: [
+        { delta: 8, quantityBefore: 0, quantityAfter: 8, reason: "INITIAL" },
+      ] as MutationRow[],
+    };
+
+    txMock.part.findUnique.mockImplementation(async () =>
+      partRow({ stockQuantity: store.stock }),
+    );
+    txMock.part.updateMany.mockImplementation(
+      async (args: { data: { stockQuantity: { decrement: number } } }) => {
+        const needed = args.data.stockQuantity.decrement;
+        if (store.stock < needed) {
+          return { count: 0 };
+        }
+        store.stock -= needed;
+        return { count: 1 };
+      },
+    );
+    let saleCounter = 0;
+    txMock.sale.create.mockImplementation(async () => ({
+      id: `sale_${++saleCounter}`,
+      soldAt: SOLD_AT,
+    }));
+    txMock.stockMutation.create.mockImplementation(
+      async (args: { data: MutationRow }) => {
+        store.mutations.push(args.data);
+        return { id: `mut_${store.mutations.length}` };
+      },
+    );
+
+    await registerSale({ partId: "part_1", quantity: 3, channel: "COUNTER" });
+    await registerSale({ partId: "part_1", quantity: 2, channel: "WORKSHOP" });
+
+    // 8 - 3 - 2 = 3 stuks op voorraad.
+    expect(store.stock).toBe(3);
+
+    const sum = store.mutations.reduce((total, row) => total + row.delta, 0);
+    expect(sum).toBe(store.stock);
+
+    // En de keten zelf klopt: elke regel sluit aan op de vorige.
+    expect(store.mutations.map((row) => row.delta)).toEqual([8, -3, -2]);
+    let running = 0;
+    for (const row of store.mutations) {
+      expect(row.quantityBefore).toBe(running);
+      expect(row.quantityAfter).toBe(row.quantityBefore + row.delta);
+      running = row.quantityAfter;
+    }
+    expect(running).toBe(store.stock);
+  });
+});
+
 describe("registerSale — ongeldig aantal", () => {
   it("weigert aantal 0 zonder de database aan te raken", async () => {
     const error = await captureError({
@@ -397,7 +595,7 @@ describe("listRecentSales", () => {
         id: "sale_1",
         partId: "part_1",
         quantity: 2,
-        salePriceAtSale: new Prisma.Decimal("24.95"),
+        salePriceInclAtSale: new Prisma.Decimal("30.19"),
         vatRateAtSale: new Prisma.Decimal("21.00"),
         channel: "COUNTER",
         reference: null,
@@ -408,7 +606,7 @@ describe("listRecentSales", () => {
         id: "sale_2",
         partId: "part_2",
         quantity: 1,
-        salePriceAtSale: new Prisma.Decimal("9.00"),
+        salePriceInclAtSale: new Prisma.Decimal("10.89"),
         vatRateAtSale: new Prisma.Decimal("21.00"),
         channel: "WORKSHOP",
         reference: "WO-2026-0412",
@@ -429,7 +627,8 @@ describe("listRecentSales", () => {
       quantity: 2,
       channel: "COUNTER",
       reference: null,
-      salePriceAtSale: 24.95,
+      salePriceInclAtSale: 30.19,
+      salePriceExclAtSale: 24.95,
       vatRateAtSale: 21,
       lineTotalExclVat: 49.9,
       lineTotalInclVat: 60.38,

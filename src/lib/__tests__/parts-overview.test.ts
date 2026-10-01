@@ -36,10 +36,13 @@ function makePart(overrides: Partial<PartDTO> = {}): PartDTO {
     category: "ACCESSORY",
     sku: `SKU-${idCounter}`,
     barcode: null,
-    purchasePrice: 10,
-    salePrice: 20,
+    purchasePriceExcl: 10,
+    // Alleen voor de weergave (T18): 10,00 excl. is 12,10 incl. bij 21%.
+    purchasePriceIncl: 12.1,
+    // Opgeslagen incl. btw (datamodel v2); 24,20 incl. is 20,00 excl. bij 21%.
+    salePriceIncl: 24.2,
     vatRate: 21,
-    salePriceInclVat: 24.2,
+    salePriceExcl: 20,
     margin: 10,
     marginPct: 50,
     stockQuantity: 5,

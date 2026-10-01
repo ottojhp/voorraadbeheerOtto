@@ -1,17 +1,14 @@
 import type { Metadata } from "next";
 
-import { Card } from "@/components/Card";
 import { PageHeader } from "@/components/PageHeader";
-import { SALE_CHANNEL_LABELS } from "@/lib/labels";
-import { formatEuro } from "@/lib/money";
 import {
   findPartByBarcode,
   getPartById,
   searchPartsForSale,
 } from "@/lib/queries/parts";
-import { listRecentSales } from "@/lib/queries/sales";
 import type { PartDTO, PartSaleOptionDTO } from "@/lib/queries/types";
 
+import { RecentSalesCard } from "./RecentSalesCard";
 import { SaleScreen } from "./SaleScreen";
 
 export const metadata: Metadata = {
@@ -52,9 +49,9 @@ function toSaleOption(part: PartDTO): PartSaleOptionDTO {
     sku: part.sku,
     barcode: part.barcode,
     stockQuantity: part.stockQuantity,
-    salePrice: part.salePrice,
+    salePriceIncl: part.salePriceIncl,
     vatRate: part.vatRate,
-    salePriceInclVat: part.salePriceInclVat,
+    salePriceExcl: part.salePriceExcl,
   };
 }
 
@@ -112,27 +109,9 @@ export default async function VerkoopPage({
     } else {
       selectedPart = toSaleOption(part);
     }
-  } else if (query && query !== "demo") {
+  } else if (query) {
     results = await searchPartsForSale(query);
   }
-
-  // TIJDELIJK
-  if (query === "demo") {
-    selectedPart = {
-      id: "demo_1",
-      name: "Remblokset voor Vespa Primavera",
-      brandName: "Vespa",
-      category: "SCOOTER_PART",
-      sku: "REM-001",
-      barcode: "8712345678901",
-      stockQuantity: 8,
-      salePrice: 24.95,
-      vatRate: 21,
-      salePriceInclVat: 30.19,
-    };
-  }
-
-  const recentSales = await listRecentSales(RECENT_SALES_LIMIT).catch(() => []); // TIJDELIJK
 
   return (
     <>
@@ -150,41 +129,9 @@ export default async function VerkoopPage({
       />
 
       <div className="mt-6">
-        <Card title="Laatste verkopen">
-          {recentSales.length === 0 ? (
-            <p className="text-sm text-gray-600">
-              Er zijn nog geen verkopen geregistreerd.
-            </p>
-          ) : (
-            <ul className="flex flex-col divide-y divide-gray-200">
-              {recentSales.map((sale) => (
-                <li
-                  key={sale.id}
-                  className="flex items-start justify-between gap-3 py-2"
-                >
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-gray-900">
-                      {sale.quantity}&times; {sale.partName}
-                    </p>
-                    <p className="text-xs text-gray-500">
-                      {SALE_CHANNEL_LABELS[sale.channel]}
-                      {sale.reference ? ` · ${sale.reference}` : ""} ·{" "}
-                      {new Date(sale.soldAt).toLocaleString("nl-NL", {
-                        day: "2-digit",
-                        month: "2-digit",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </p>
-                  </div>
-                  <p className="shrink-0 text-sm font-medium text-gray-900">
-                    {formatEuro(sale.lineTotalExclVat)}
-                  </p>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
+        {/* Eigen component met eigen foutafhandeling: faalt het ophalen van de
+            historie, dan blijft zoeken, scannen en verkopen hierboven werken. */}
+        <RecentSalesCard limit={RECENT_SALES_LIMIT} />
       </div>
     </>
   );

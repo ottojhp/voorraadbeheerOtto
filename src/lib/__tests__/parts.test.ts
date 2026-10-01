@@ -66,8 +66,10 @@ const basePart: PartRecord = {
   category: "SCOOTER_PART",
   sku: "REM-001",
   barcode: "8712345678901",
-  purchasePrice: new Prisma.Decimal("12.50"),
-  salePrice: new Prisma.Decimal("24.95"),
+  supplierArticleNumber: "PIA-4T-8412",
+  purchasePriceExcl: new Prisma.Decimal("12.50"),
+  // INCL. btw (datamodel v2): 30,19 incl. is 24,95 excl. bij 21%.
+  salePriceIncl: new Prisma.Decimal("30.19"),
   vatRate: new Prisma.Decimal("21.00"),
   stockQuantity: 8,
   minStock: 4,
@@ -97,11 +99,11 @@ describe("toPartDTO", () => {
   it("zet Decimal om naar number en Date naar ISO-string", () => {
     const dto = toPartDTO(makePart());
 
-    expect(dto.purchasePrice).toBe(12.5);
-    expect(dto.salePrice).toBe(24.95);
+    expect(dto.purchasePriceExcl).toBe(12.5);
+    expect(dto.salePriceIncl).toBe(30.19);
     expect(dto.vatRate).toBe(21);
-    expect(typeof dto.purchasePrice).toBe("number");
-    expect(typeof dto.salePrice).toBe("number");
+    expect(typeof dto.purchasePriceExcl).toBe("number");
+    expect(typeof dto.salePriceIncl).toBe("number");
     expect(typeof dto.vatRate).toBe("number");
 
     expect(dto.createdAt).toBe("2026-01-15T10:30:00.000Z");
@@ -157,8 +159,8 @@ describe("toPartDTO", () => {
   it("geeft 0% marge bij verkoopprijs 0 in plaats van NaN of Infinity", () => {
     const dto = toPartDTO(
       makePart({
-        purchasePrice: new Prisma.Decimal("5.00"),
-        salePrice: new Prisma.Decimal("0.00"),
+        purchasePriceExcl: new Prisma.Decimal("5.00"),
+        salePriceIncl: new Prisma.Decimal("0.00"),
       }),
     );
 
@@ -167,27 +169,39 @@ describe("toPartDTO", () => {
     expect(Number.isFinite(dto.marginPct)).toBe(true);
   });
 
-  it("leidt de verkoopprijs incl. 21% btw af", () => {
+  it("leidt de verkoopprijs excl. 21% btw af uit het opgeslagen incl.-bedrag", () => {
     const dto = toPartDTO(
       makePart({
-        salePrice: new Prisma.Decimal("24.95"),
+        salePriceIncl: new Prisma.Decimal("30.19"),
         vatRate: new Prisma.Decimal("21.00"),
       }),
     );
 
-    // 24,95 * 1,21 = 30,1895 → 30,19
-    expect(dto.salePriceInclVat).toBe(30.19);
+    // 30,19 / 1,21 = 24,9504... → 24,95
+    expect(dto.salePriceExcl).toBe(24.95);
+    // Het opgeslagen incl.-bedrag blijft onaangeroerd: dat is wat de klant betaalt.
+    expect(dto.salePriceIncl).toBe(30.19);
   });
 
-  it("leidt de verkoopprijs incl. 9% btw af", () => {
+  it("leidt de verkoopprijs excl. 9% btw af", () => {
     const dto = toPartDTO(
       makePart({
-        salePrice: new Prisma.Decimal("100.00"),
+        salePriceIncl: new Prisma.Decimal("109.00"),
         vatRate: new Prisma.Decimal("9.00"),
       }),
     );
 
-    expect(dto.salePriceInclVat).toBe(109);
+    expect(dto.salePriceExcl).toBe(100);
+  });
+
+  it("rekent de marge op EXCL.-basis, niet op het opgeslagen incl.-bedrag", () => {
+    // Zou de marge uit het incl.-bedrag komen (30,19 - 12,50 = 17,69), dan stond er
+    // ~42% te veel winst in het overzicht. Dit is precies de fout die de hernoeming
+    // van de velden moet voorkomen (SPEC §3 regel 0).
+    const dto = toPartDTO(makePart());
+
+    expect(dto.margin).toBe(12.45);
+    expect(dto.margin).not.toBe(17.69);
   });
 
   it("markeert gearchiveerde onderdelen met een ISO-string", () => {
@@ -417,7 +431,8 @@ describe("listParts", () => {
     expect(result.pageSize).toBe(DEFAULT_PAGE_SIZE);
     expect(result.pageCount).toBe(1);
     expect(result.items).toHaveLength(1);
-    expect(result.items[0].salePrice).toBe(24.95);
+    expect(result.items[0].salePriceIncl).toBe(30.19);
+    expect(result.items[0].salePriceExcl).toBe(24.95);
     expect(result.items[0].margin).toBe(12.45);
   });
 
@@ -464,20 +479,29 @@ describe("listParts", () => {
         {
           id: "laag",
           name: "Laag",
-          purchasePrice: new Prisma.Decimal("9.00"),
-          salePrice: new Prisma.Decimal("10.00"),
+          purchasePriceExcl: new Prisma.Decimal("9.00"),
+          salePriceIncl: new Prisma.Decimal("10.00"),
+          // 0% btw: incl. = excl., zodat de marge in deze test het
+          // sorteergedrag test en niet de btw-afleiding.
+          vatRate: new Prisma.Decimal("0.00"),
         },
         {
           id: "hoog",
           name: "Hoog",
-          purchasePrice: new Prisma.Decimal("50.00"),
-          salePrice: new Prisma.Decimal("100.00"),
+          purchasePriceExcl: new Prisma.Decimal("50.00"),
+          salePriceIncl: new Prisma.Decimal("100.00"),
+          // 0% btw: incl. = excl., zodat de marge in deze test het
+          // sorteergedrag test en niet de btw-afleiding.
+          vatRate: new Prisma.Decimal("0.00"),
         },
         {
           id: "midden",
           name: "Midden",
-          purchasePrice: new Prisma.Decimal("10.00"),
-          salePrice: new Prisma.Decimal("20.00"),
+          purchasePriceExcl: new Prisma.Decimal("10.00"),
+          salePriceIncl: new Prisma.Decimal("20.00"),
+          // 0% btw: incl. = excl., zodat de marge in deze test het
+          // sorteergedrag test en niet de btw-afleiding.
+          vatRate: new Prisma.Decimal("0.00"),
         },
       ])
       // Prisma geeft `id: { in: [...] }` in willekeurige volgorde terug.
@@ -501,8 +525,10 @@ describe("listParts", () => {
     expect(firstCall.select).toEqual({
       id: true,
       name: true,
-      purchasePrice: true,
-      salePrice: true,
+      purchasePriceExcl: true,
+      salePriceIncl: true,
+      // Het btw-tarief is nodig om de verkoopprijs terug te rekenen naar excl.
+      vatRate: true,
     });
     expect(firstCall.skip).toBeUndefined();
 
@@ -518,20 +544,29 @@ describe("listParts", () => {
         {
           id: "laag",
           name: "Laag",
-          purchasePrice: new Prisma.Decimal("9.00"),
-          salePrice: new Prisma.Decimal("10.00"),
+          purchasePriceExcl: new Prisma.Decimal("9.00"),
+          salePriceIncl: new Prisma.Decimal("10.00"),
+          // 0% btw: incl. = excl., zodat de marge in deze test het
+          // sorteergedrag test en niet de btw-afleiding.
+          vatRate: new Prisma.Decimal("0.00"),
         },
         {
           id: "hoog",
           name: "Hoog",
-          purchasePrice: new Prisma.Decimal("50.00"),
-          salePrice: new Prisma.Decimal("100.00"),
+          purchasePriceExcl: new Prisma.Decimal("50.00"),
+          salePriceIncl: new Prisma.Decimal("100.00"),
+          // 0% btw: incl. = excl., zodat de marge in deze test het
+          // sorteergedrag test en niet de btw-afleiding.
+          vatRate: new Prisma.Decimal("0.00"),
         },
         {
           id: "midden",
           name: "Midden",
-          purchasePrice: new Prisma.Decimal("10.00"),
-          salePrice: new Prisma.Decimal("20.00"),
+          purchasePriceExcl: new Prisma.Decimal("10.00"),
+          salePriceIncl: new Prisma.Decimal("20.00"),
+          // 0% btw: incl. = excl., zodat de marge in deze test het
+          // sorteergedrag test en niet de btw-afleiding.
+          vatRate: new Prisma.Decimal("0.00"),
         },
       ])
       .mockResolvedValueOnce([makePart({ id: "laag", name: "Laag" })]);
@@ -554,14 +589,20 @@ describe("listParts", () => {
         {
           id: "hoog",
           name: "Hoog",
-          purchasePrice: new Prisma.Decimal("50.00"),
-          salePrice: new Prisma.Decimal("100.00"),
+          purchasePriceExcl: new Prisma.Decimal("50.00"),
+          salePriceIncl: new Prisma.Decimal("100.00"),
+          // 0% btw: incl. = excl., zodat de marge in deze test het
+          // sorteergedrag test en niet de btw-afleiding.
+          vatRate: new Prisma.Decimal("0.00"),
         },
         {
           id: "laag",
           name: "Laag",
-          purchasePrice: new Prisma.Decimal("9.00"),
-          salePrice: new Prisma.Decimal("10.00"),
+          purchasePriceExcl: new Prisma.Decimal("9.00"),
+          salePriceIncl: new Prisma.Decimal("10.00"),
+          // 0% btw: incl. = excl., zodat de marge in deze test het
+          // sorteergedrag test en niet de btw-afleiding.
+          vatRate: new Prisma.Decimal("0.00"),
         },
       ])
       .mockResolvedValueOnce([
@@ -579,8 +620,11 @@ describe("listParts", () => {
       {
         id: "laag",
         name: "Laag",
-        purchasePrice: new Prisma.Decimal("9.00"),
-        salePrice: new Prisma.Decimal("10.00"),
+        purchasePriceExcl: new Prisma.Decimal("9.00"),
+        salePriceIncl: new Prisma.Decimal("10.00"),
+        // 0% btw: incl. = excl., zodat de marge in deze test het
+        // sorteergedrag test en niet de btw-afleiding.
+        vatRate: new Prisma.Decimal("0.00"),
       },
     ]);
 
@@ -682,7 +726,7 @@ describe("searchPartsForSale", () => {
         sku: "REM-001",
         barcode: "8712345678901",
         stockQuantity: 8,
-        salePrice: new Prisma.Decimal("24.95"),
+        salePriceIncl: new Prisma.Decimal("30.19"),
         vatRate: new Prisma.Decimal("21.00"),
         brand: { name: "Vespa" },
       },
@@ -693,7 +737,7 @@ describe("searchPartsForSale", () => {
         sku: "OLI-010",
         barcode: null,
         stockQuantity: 0,
-        salePrice: new Prisma.Decimal("9.50"),
+        salePriceIncl: new Prisma.Decimal("11.50"),
         vatRate: new Prisma.Decimal("21.00"),
         brand: null,
       },
@@ -710,9 +754,10 @@ describe("searchPartsForSale", () => {
         sku: "REM-001",
         barcode: "8712345678901",
         stockQuantity: 8,
-        salePrice: 24.95,
+        salePriceIncl: 30.19,
         vatRate: 21,
-        salePriceInclVat: 30.19,
+        // 30,19 / 1,21 = 24,9504... → 24,95
+        salePriceExcl: 24.95,
       },
       {
         id: "part_2",
@@ -722,9 +767,10 @@ describe("searchPartsForSale", () => {
         sku: "OLI-010",
         barcode: null,
         stockQuantity: 0,
-        salePrice: 9.5,
+        salePriceIncl: 11.5,
         vatRate: 21,
-        salePriceInclVat: 11.5,
+        // 11,50 / 1,21 = 9,5041... → 9,50
+        salePriceExcl: 9.5,
       },
     ]);
   });

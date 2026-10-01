@@ -5,6 +5,7 @@ import { Badge } from "@/components/Badge";
 import { Card } from "@/components/Card";
 import { EmptyState } from "@/components/EmptyState";
 import { PageHeader } from "@/components/PageHeader";
+import { PriceWithVat } from "@/components/PriceWithVat";
 import {
   Table,
   TableBody,
@@ -70,8 +71,15 @@ function BestsellerList({ items }: { items: BestsellerDTO[] }) {
  * `Promise.all`) — deze pagina rekent zelf niets uit, dat is de taak van
  * `@/lib/queries/dashboard`.
  *
- * Alle bedragen zijn EXCLUSIEF btw (SPEC §3 regel 0), wat hier expliciet bij staat
- * omdat dit de eerste pagina is die een eigenaar ziet.
+ * Bedragen (T18): verkoopbedragen staan met het bedrag INCLUSIEF btw als hoofdbedrag
+ * en het bedrag exclusief btw kleiner eronder — steeds via `PriceWithVat`, dezelfde
+ * vorm als op `/onderdelen` en in het verkoopscherm. De voorraadwaarde staat er
+ * bewust twee keer: inkoop EXCL. btw (wat de winkel voor het schap betaald heeft) en
+ * verkoop INCL. btw (wat het schap aan de kassa opbrengt). Dat zijn twee
+ * verschillende dingen, dus ze zijn allebei expliciet gelabeld. Waar deze pagina
+ * eerder in één regel "alle bedragen exclusief btw" beloofde, staat nu per kaart wat
+ * het is: één algemene regel bovenaan kan niet kloppen zodra er twee soorten
+ * bedragen op het scherm staan.
  */
 export default async function HomePage() {
   const data = await getDashboardData();
@@ -81,22 +89,31 @@ export default async function HomePage() {
     <div>
       <PageHeader
         title="Dashboard"
-        description="Overzicht van voorraad en verkopen — alle bedragen exclusief btw."
+        description="Overzicht van voorraad en verkopen. Verkoopbedragen staan inclusief btw, met het bedrag exclusief btw eronder; marge wordt altijd op excl.-basis berekend."
       />
 
       {/* Kerncijfers */}
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        {/* Twee verschillende grootheden, dus elk met een eigen label (T18): het
+            inkoopbedrag is excl. btw (de leveranciersfactuur), de verkoopwaarde
+            incl. btw (de kassa) met het excl.-stuurgetal eronder. */}
         <Card>
           <p className="text-sm text-gray-500">Voorraadwaarde inkoop</p>
           <p className="mt-1 text-xl font-semibold text-gray-900">
-            {formatEuro(totals.stockValuePurchase)}
+            {formatEuro(totals.stockValuePurchaseExcl)}
+          </p>
+          <p className="text-xs text-gray-500">
+            excl. btw — zoals op de leveranciersfacturen
           </p>
         </Card>
         <Card>
           <p className="text-sm text-gray-500">Voorraadwaarde verkoop</p>
-          <p className="mt-1 text-xl font-semibold text-gray-900">
-            {formatEuro(totals.stockValueSale)}
-          </p>
+          <PriceWithVat
+            incl={totals.stockValueSaleIncl}
+            excl={totals.stockValueSaleExcl}
+            size="lg"
+            className="mt-1"
+          />
         </Card>
         <Card>
           <p className="text-sm text-gray-500">Unieke onderdelen</p>
@@ -227,9 +244,12 @@ export default async function HomePage() {
                         <span className="ml-2 text-xs text-gray-400">(gearchiveerd)</span>
                       )}
                     </span>
-                    <span className="shrink-0 text-right text-gray-700">
-                      {formatEuro(sale.lineTotalExclVat)}
-                    </span>
+                    <PriceWithVat
+                      incl={sale.lineTotalInclVat}
+                      excl={sale.lineTotalExclVat}
+                      align="right"
+                      className="shrink-0"
+                    />
                   </div>
                   <div className="mt-0.5 flex items-center justify-between gap-2 text-xs text-gray-500">
                     <span>

@@ -37,8 +37,8 @@ export interface SupplierPartDTO {
   sku: string;
   stockQuantity: number;
   minStock: number;
-  /** Verkoopprijs excl. btw. */
-  salePrice: number;
+  /** Verkoopprijs INCL. btw — zoals opgeslagen (SPEC §3 regel 0, v2.0). */
+  salePriceIncl: number;
 }
 
 /** Volledige leverancier met gekoppelde actieve onderdelen, voor de detailpagina. */
@@ -76,7 +76,7 @@ export interface SupplierPartSource {
   sku: string;
   stockQuantity: number;
   minStock: number;
-  salePrice: DecimalLike;
+  salePriceIncl: DecimalLike;
 }
 
 export function toSupplierPartDTO(part: SupplierPartSource): SupplierPartDTO {
@@ -86,7 +86,7 @@ export function toSupplierPartDTO(part: SupplierPartSource): SupplierPartDTO {
     sku: part.sku,
     stockQuantity: part.stockQuantity,
     minStock: part.minStock,
-    salePrice: decimalToNumber(part.salePrice),
+    salePriceIncl: decimalToNumber(part.salePriceIncl),
   };
 }
 
@@ -202,7 +202,7 @@ export async function getSupplierById(
           sku: true,
           stockQuantity: true,
           minStock: true,
-          salePrice: true,
+          salePriceIncl: true,
         },
       },
     },

@@ -40,6 +40,26 @@ enum SaleChannel {
   WORKSHOP
 }
 
+/// Waarom een voorraadmutatie plaatsvond (T17).
+///
+/// DELIVERY    = levering van de leverancier binnengeboekt.
+/// CORRECTION  = handmatige correctie (verkeerd geboekt, breuk, retour).
+/// COUNT       = uitkomst van een fysieke telling; de voorraad is op het gestelde
+///               aantal gezet, het verschil staat in `delta`.
+/// SALE        = verkoop over de balie (hoort bij een `Sale` met channel COUNTER).
+/// WORKSHOP    = verbruik in de eigen werkplaats (hoort bij een `Sale` met channel
+///               WORKSHOP). Bewust een eigen reden naast SALE: het grootboek moet
+///               zonder join naar `Sale` te lezen zijn.
+/// INITIAL     = beginstand bij het aanleggen van het onderdeel.
+enum StockMutationReason {
+  DELIVERY
+  CORRECTION
+  COUNT
+  SALE
+  WORKSHOP
+  INITIAL
+}
+
 // ---------------------------------------------------------------------------
 // Modellen
 // ---------------------------------------------------------------------------
@@ -97,13 +117,27 @@ model Part {
   /// unique index, dus "uniek indien gevuld" werkt zonder extra constraint.
   barcode String? @unique
 
-  /// Alle prijzen worden EXCLUSIEF btw opgeslagen (SPEC §3 regel 0): inkoopfacturen
-  /// zijn excl. btw, en excl. met incl. vergelijken maakt elke marge ~21% te hoog.
-  /// De prijs incl. btw wordt afgeleid en alleen getoond, nooit opgeslagen.
-  purchasePrice Decimal @db.Decimal(10, 2)
-  salePrice     Decimal @db.Decimal(10, 2)
+  /// Het artikelnummer dat de leverancier of fabrikant op de verpakking of het label
+  /// drukt. Bewust NIET uniek: twee leveranciers kunnen hetzelfde nummer gebruiken,
+  /// en hetzelfde nummer kan op meerdere varianten staan. Geïndexeerd omdat T20
+  /// hierop matcht bij het scannen van een label.
+  supplierArticleNumber String?
+
+  /// Inkoopprijs EXCLUSIEF btw: leveranciersfacturen zijn excl. btw
+  /// (SPEC §3 regel 0, herzien in v2.0).
+  purchasePriceExcl Decimal @db.Decimal(10, 2)
+  /// Verkoopprijs INCLUSIEF btw: dat is het bedrag dat de winkel vaststelt en de
+  /// klant betaalt, en het moet exact blijven. Excl. opslaan in twee decimalen
+  /// verliest centen bij het terugrekenen (€10,00 incl. bij 21% → 8,264462… →
+  /// opgeslagen 8,26 → terug €9,99). Het excl.-bedrag wordt afgeleid met
+  /// `salePriceIncl / (1 + vatRate / 100)`; marge en rapportages rekenen ALTIJD met
+  /// dat excl.-bedrag, want btw is geen winst.
+  ///
+  /// De veldnaam draagt de betekenis (`Incl` / `Excl`), zodat het verwarren van de
+  /// twee een compilerfout geeft in plaats van een stille rekenfout.
+  salePriceIncl     Decimal @db.Decimal(10, 2)
   /// Btw-percentage per product (bv. 21.00), niet als fractie.
-  vatRate       Decimal @default(21) @db.Decimal(5, 2)
+  vatRate           Decimal @default(21) @db.Decimal(5, 2)
 
   stockQuantity Int @default(0)
   /// Drempel voor de lage-voorraadmelding.
@@ -126,12 +160,14 @@ model Part {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  sales Sale[]
+  sales          Sale[]
+  stockMutations StockMutation[]
 
   @@index([brandId])
   @@index([supplierId])
   @@index([archivedAt])
   @@index([category])
+  @@index([supplierArticleNumber])
 }
 
 /// Eén verkoop- of werkplaatsverbruikregel.
@@ -150,11 +186,14 @@ model Sale {
   /// Altijd > 0; afgedwongen in de Zod-validatie, niet in de database.
   quantity Int
 
-  /// Prijzen per stuk, EXCLUSIEF btw, op het moment van verkoop.
-  salePriceAtSale     Decimal @db.Decimal(10, 2)
-  purchasePriceAtSale Decimal @db.Decimal(10, 2)
-  /// Btw-tarief op moment van verkoop, zodat het incl.-bedrag reconstrueerbaar blijft.
-  vatRateAtSale       Decimal @db.Decimal(5, 2)
+  /// Verkoopprijs per stuk INCLUSIEF btw op het moment van verkoop: exact het bedrag
+  /// dat de klant betaalde (SPEC §3 regel 0, v2.0).
+  salePriceInclAtSale     Decimal @db.Decimal(10, 2)
+  /// Inkoopprijs per stuk EXCLUSIEF btw op het moment van verkoop.
+  purchasePriceExclAtSale Decimal @db.Decimal(10, 2)
+  /// Btw-tarief op moment van verkoop, zodat het excl.-bedrag — en daarmee de marge —
+  /// reconstrueerbaar blijft, ook als het tarief van het onderdeel later wijzigt.
+  vatRateAtSale           Decimal @db.Decimal(5, 2)
 
   channel SaleChannel
 
@@ -168,4 +207,53 @@ model Sale {
   @@index([partId])
   @@index([soldAt])
   @@index([channel])
+}
+
+/// Voorraadgrootboek: elke wijziging van `Part.stockQuantity` laat hier één regel
+/// achter (T17). Onveranderlijk: een verkeerde mutatie wordt niet gewist of
+/// bijgewerkt, maar tegengeboekt met een nieuwe regel (`CORRECTION`), zodat de
+/// geschiedenis reconstrueerbaar blijft.
+///
+/// ### Waarom er GEEN "wie" wordt vastgelegd
+/// De applicatie beveiligt zichzelf met één gedeeld wachtwoord (SPEC §F7) en heeft
+/// geen gebruikersaccounts: iedereen aan de balie en in de werkplaats logt met
+/// hetzelfde wachtwoord in. Er is dus geen identiteit die vast te leggen valt; een
+/// veld `createdBy` zou onvermijdelijk leeg of onbetrouwbaar zijn en de suggestie
+/// wekken dat mutaties herleidbaar zijn tot een persoon. Bovendien is een
+/// persoonsgegeven zonder noodzaak niet gewenst (AVG, zie ook `Sale.reference`).
+/// Vastgelegd worden daarom alleen WANNEER (`createdAt`), WAT (`delta`,
+/// `quantityBefore`, `quantityAfter`) en WAAROM (`reason`, `note`, `saleId`).
+model StockMutation {
+  id String @id @default(cuid())
+
+  partId String
+  /// onDelete: Restrict — het grootboek mag NOOIT verdwijnen (SPEC §3 regel 4), dus
+  /// de database weigert het hard verwijderen van een onderdeel met mutaties.
+  /// Archiveren via `Part.archivedAt` is de enige weg.
+  part   Part   @relation(fields: [partId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  /// Verandering in stuks: negatief bij verkoop of verbruik, positief bij een
+  /// levering. Mag niet 0 zijn (afgedwongen met een CHECK in de migratie).
+  delta          Int
+  /// Voorraadstand vóór deze mutatie.
+  quantityBefore Int
+  /// Voorraadstand ná deze mutatie; altijd `quantityBefore + delta`, expliciet
+  /// opgeslagen zodat het grootboek zonder herrekenen te lezen is.
+  quantityAfter  Int
+
+  reason StockMutationReason
+  /// Vrije toelichting, bv. "pakbon 2026-4471". GEEN persoonsgegevens (AVG).
+  note   String?
+
+  /// Gevuld als deze mutatie bij een verkoop of werkplaatsverbruik hoort. Bewust
+  /// GEEN foreign key: het grootboek moet ook overeind blijven als een verkoopregel
+  /// ooit gecorrigeerd wordt, en een verwijderde `Sale` mag de mutatie niet
+  /// meeslepen.
+  saleId String?
+
+  createdAt DateTime @default(now())
+
+  @@index([partId])
+  @@index([createdAt])
+  @@index([reason])
 }

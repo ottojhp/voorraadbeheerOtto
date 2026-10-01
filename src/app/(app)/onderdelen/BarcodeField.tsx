@@ -13,6 +13,13 @@
  *
  * De echte, harde controle blijft server-side in `actions.ts` (Prisma's P2002) — deze
  * component beslist niets zelf, hij toont alleen het resultaat van de serverfunctie.
+ *
+ * Faalt die servercontrole zelf (netwerk weg, database even niet bereikbaar), dan
+ * blokkeert dat het opslaan NIET — de unique constraint vangt een echte dubbele
+ * barcode bij opslaan alsnog af. Maar het blijft niet onzichtbaar: zonder melding kan
+ * de gebruiker "geen waarschuwing" niet onderscheiden van "controle niet uitgevoerd",
+ * en dat is de stille mislukking die SPEC §F8 verbiedt. Er verschijnt daarom een
+ * neutrale regel dat de controle niet gelukt is (T21).
  */
 
 import { useEffect, useState } from "react";
@@ -52,6 +59,8 @@ export function BarcodeField({
   const [scannerOpen, setScannerOpen] = useState(false);
   const [conflict, setConflict] = useState<BarcodeConflict | null>(null);
   const [checking, setChecking] = useState(false);
+  /** De servercontrole zelf is mislukt; de gebruiker hoort dat te weten. */
+  const [checkFailed, setCheckFailed] = useState(false);
 
   // Server-side controle, gedebounced: elke toetsaanslag hoeft niet meteen een
   // aanroep te doen, en een scan (die het veld in één keer vult) triggert hem ook via
@@ -60,6 +69,7 @@ export function BarcodeField({
     const trimmed = value.trim();
     if (!trimmed) {
       setConflict(null);
+      setCheckFailed(false);
       setChecking(false);
       return;
     }
@@ -72,13 +82,18 @@ export function BarcodeField({
         .then((result) => {
           if (!cancelled) {
             setConflict(result);
+            setCheckFailed(false);
           }
         })
-        .catch(() => {
-          // De vriendelijke controle mag stilletjes falen: de server blokkeert een
-          // echte dubbele barcode bij opslaan sowieso via de unique constraint.
+        .catch((error: unknown) => {
+          // De vriendelijke controle mag falen zonder het opslaan te blokkeren — de
+          // unique constraint vangt een echte dubbele barcode alsnog af — maar niet
+          // stil: de gebruiker krijgt te zien dat de controle niet is uitgevoerd
+          // (SPEC §F8, T21).
+          console.error("Barcodecontrole mislukt", error);
           if (!cancelled) {
             setConflict(null);
+            setCheckFailed(true);
           }
         })
         .finally(() => {
@@ -126,6 +141,17 @@ export function BarcodeField({
 
       {checking && !conflict && (
         <p className="text-sm text-gray-500">Barcode controleren…</p>
+      )}
+
+      {checkFailed && !checking && (
+        <p
+          role="status"
+          className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+        >
+          De controle op dubbele barcodes kon niet worden uitgevoerd. Je kunt gewoon
+          opslaan; is de barcode al in gebruik, dan meldt de server dat bij het
+          opslaan.
+        </p>
       )}
 
       {conflict && (

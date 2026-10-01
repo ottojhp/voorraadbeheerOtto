@@ -75,8 +75,10 @@ export default async function OnderdeelBewerkenPagina({ params }: PageProps) {
           description: part.description,
           fitsModels: part.fitsModels,
           location: part.location,
-          purchasePrice: part.purchasePrice,
-          salePrice: part.salePrice,
+          purchasePriceExcl: part.purchasePriceExcl,
+          // Het formulier voert de verkoopprijs INCL. btw in (SPEC §3 regel 0),
+          // dus hier hoort het opgeslagen incl.-bedrag, niet het afgeleide excl.
+          salePriceIncl: part.salePriceIncl,
           vatRate: part.vatRate,
           stockQuantity: part.stockQuantity,
           minStock: part.minStock,

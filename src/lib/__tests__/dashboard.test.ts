@@ -104,24 +104,42 @@ describe("rawNumericToNumber", () => {
 // ---------------------------------------------------------------------------
 
 describe("readStockValueRows", () => {
-  it("een lege rijenset (lege database) geeft 0 en 0, geen NaN", () => {
+  it("een lege rijenset (lege database) geeft overal 0, geen NaN", () => {
     expect(readStockValueRows([])).toEqual({
-      stockValuePurchase: 0,
-      stockValueSale: 0,
+      stockValuePurchaseExcl: 0,
+      stockValueSaleExcl: 0,
+      stockValueSaleIncl: 0,
     });
   });
 
-  it("leest de eerste rij en converteert beide sommen", () => {
+  it("leest de eerste rij en converteert alle drie de sommen", () => {
     const result = readStockValueRows([
-      { purchaseValue: "150.00", saleValue: new Prisma.Decimal("299.50") },
+      {
+        purchaseValue: "150.00",
+        saleValue: new Prisma.Decimal("299.50"),
+        saleValueIncl: new Prisma.Decimal("362.40"),
+      },
     ]);
-    expect(result).toEqual({ stockValuePurchase: 150, stockValueSale: 299.5 });
+    expect(result).toEqual({
+      stockValuePurchaseExcl: 150,
+      stockValueSaleExcl: 299.5,
+      stockValueSaleIncl: 362.4,
+    });
+  });
+
+  it("een ontbrekende incl.-som geeft 0, nooit NaN", () => {
+    const result = readStockValueRows([
+      { purchaseValue: "150.00", saleValue: "299.50" },
+    ]);
+    expect(result.stockValueSaleIncl) .toBe(0);
+    expect(Number.isNaN(result.stockValueSaleIncl)).toBe(false);
   });
 
   it("een niet-array resultaat geeft ook nette nullen", () => {
     expect(readStockValueRows(undefined)).toEqual({
-      stockValuePurchase: 0,
-      stockValueSale: 0,
+      stockValuePurchaseExcl: 0,
+      stockValueSaleExcl: 0,
+      stockValueSaleIncl: 0,
     });
   });
 });
@@ -131,18 +149,44 @@ describe("readStockValueRows", () => {
 // ---------------------------------------------------------------------------
 
 describe("getStockValue", () => {
-  it("lege database: $queryRaw geeft geen rijen, resultaat is 0/0", async () => {
+  it("lege database: $queryRaw geeft geen rijen, resultaat is overal 0", async () => {
     prismaMock.$queryRaw.mockResolvedValueOnce([]);
     const result = await getStockValue();
-    expect(result).toEqual({ stockValuePurchase: 0, stockValueSale: 0 });
+    expect(result).toEqual({
+      stockValuePurchaseExcl: 0,
+      stockValueSaleExcl: 0,
+      stockValueSaleIncl: 0,
+    });
   });
 
   it("converteert het ruwe queryresultaat (string/Decimal) naar number", async () => {
     prismaMock.$queryRaw.mockResolvedValueOnce([
-      { purchaseValue: "1000.00", saleValue: new Prisma.Decimal("1999.98") },
+      {
+        purchaseValue: "1000.00",
+        saleValue: new Prisma.Decimal("1999.98"),
+        saleValueIncl: new Prisma.Decimal("2419.98"),
+      },
     ]);
     const result = await getStockValue();
-    expect(result).toEqual({ stockValuePurchase: 1000, stockValueSale: 1999.98 });
+    expect(result).toEqual({
+      stockValuePurchaseExcl: 1000,
+      stockValueSaleExcl: 1999.98,
+      stockValueSaleIncl: 2419.98,
+    });
+  });
+
+  it("vraagt de verkoopwaarde zowel incl. als excl. btw op in één query", async () => {
+    prismaMock.$queryRaw.mockResolvedValueOnce([]);
+    await getStockValue();
+    // Prisma tagged template: het eerste argument is de array met SQL-fragmenten.
+    const sql = (prismaMock.$queryRaw.mock.calls[0][0] as unknown as string[]).join(
+      "?",
+    );
+    // Het excl.-bedrag wordt teruggerekend, het incl.-bedrag rechtstreeks gesommeerd.
+    expect(sql).toContain('ROUND("salePriceIncl" / (1 + "vatRate" / 100), 2)');
+    expect(sql).toContain('SUM("stockQuantity" * "salePriceIncl")');
+    // De inkoopwaarde blijft excl. btw: geen omrekening op die kolom.
+    expect(sql).toContain('SUM("stockQuantity" * "purchasePriceExcl")');
   });
 });
 
@@ -233,8 +277,9 @@ describe("getDashboardTotals", () => {
     const totals = await getDashboardTotals();
 
     expect(totals).toEqual({
-      stockValuePurchase: 0,
-      stockValueSale: 0,
+      stockValuePurchaseExcl: 0,
+      stockValueSaleExcl: 0,
+      stockValueSaleIncl: 0,
       uniquePartCount: 0,
       totalStockQuantity: 0,
       lowStockCount: 0,
@@ -420,8 +465,9 @@ describe("getDashboardData", () => {
     const data = await getDashboardData(new Date("2026-09-22T14:00:00.000Z"));
 
     expect(data.totals).toEqual({
-      stockValuePurchase: 0,
-      stockValueSale: 0,
+      stockValuePurchaseExcl: 0,
+      stockValueSaleExcl: 0,
+      stockValueSaleIncl: 0,
       uniquePartCount: 0,
       totalStockQuantity: 0,
       lowStockCount: 0,

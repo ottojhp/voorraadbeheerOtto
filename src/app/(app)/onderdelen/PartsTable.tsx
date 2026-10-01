@@ -3,8 +3,13 @@
  *
  * Puur presentatief: de data komt al gefilterd, gesorteerd en gepagineerd
  * binnen vanuit `listParts` (server component `page.tsx`). Dit bestand rekent
- * niets uit — marge, margepercentage en de prijs incl. btw staan al op de
- * `PartDTO` (zie `@/lib/queries/parts`) — en filtert/sorteert niet opnieuw.
+ * niets uit — marge, margepercentage en de afgeleide incl./excl.-bedragen staan al op
+ * de `PartDTO` (zie `@/lib/queries/parts`) — en filtert/sorteert niet opnieuw.
+ *
+ * Prijsweergave (T18): elk bedrag gaat door `PriceWithVat`, dus incl. btw als
+ * hoofdbedrag met excl. btw kleiner eronder — in de tabel én op de mobiele kaarten,
+ * in exact dezelfde vorm. De marge blijft op excl.-basis en staat als zodanig
+ * gelabeld, met de toelichting uit `MARGIN_BASIS_NOTE` erbij.
  *
  * Geen "use client": er is geen interactiviteit nodig (sorteren/filteren loopt
  * via URL-navigatie in `PartsFilters`), dus dit blijft een Server Component.
@@ -14,6 +19,7 @@ import Link from "next/link";
 
 import { Badge } from "@/components/Badge";
 import { Card } from "@/components/Card";
+import { MarginBasisNote, PriceWithVat } from "@/components/PriceWithVat";
 import {
   Table,
   TableBody,
@@ -84,6 +90,16 @@ export function PartsTable({ items, groupByBrand }: PartsTableProps) {
 
   return (
     <div className="flex flex-col gap-8">
+      {/* Eén keer bovenaan: hoe de bedragen hieronder gelezen moeten worden (T18). */}
+      <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
+        <p className="text-xs text-gray-600">
+          Inkoop- en verkoopprijs staan met het bedrag{" "}
+          <strong>inclusief btw</strong> als hoofdbedrag en het bedrag exclusief btw
+          kleiner eronder.
+        </p>
+        <MarginBasisNote className="mt-0.5" />
+      </div>
+
       {groups.map((group) => (
         <section key={group.key}>
           {groupByBrand && (
@@ -101,8 +117,8 @@ export function PartsTable({ items, groupByBrand }: PartsTableProps) {
                 <TableHeaderCell>Categorie</TableHeaderCell>
                 <TableHeaderCell>SKU</TableHeaderCell>
                 <TableHeaderCell>Inkoop</TableHeaderCell>
-                <TableHeaderCell>Verkoop (excl./incl. btw)</TableHeaderCell>
-                <TableHeaderCell>Marge</TableHeaderCell>
+                <TableHeaderCell>Verkoop</TableHeaderCell>
+                <TableHeaderCell>Marge (excl. btw)</TableHeaderCell>
                 <TableHeaderCell>Voorraad</TableHeaderCell>
                 <TableHeaderCell>Min.</TableHeaderCell>
                 <TableHeaderCell>Leverancier</TableHeaderCell>
@@ -122,17 +138,24 @@ export function PartsTable({ items, groupByBrand }: PartsTableProps) {
                   <TableCell>{part.brand ? part.brand.name : "Universeel"}</TableCell>
                   <TableCell>{getCategoryLabel(part.category)}</TableCell>
                   <TableCell>{part.sku}</TableCell>
-                  <TableCell>{formatEuro(part.purchasePrice)}</TableCell>
                   <TableCell>
-                    {formatEuro(part.salePrice)}
-                    <span className="block text-xs text-gray-500">
-                      {formatEuro(part.salePriceInclVat)} incl. btw
-                    </span>
+                    <PriceWithVat
+                      incl={part.purchasePriceIncl}
+                      excl={part.purchasePriceExcl}
+                    />
                   </TableCell>
                   <TableCell>
-                    {formatEuro(part.margin)}
-                    <span className="block text-xs text-gray-500">
-                      {formatMarginPct(part.marginPct)}
+                    <PriceWithVat
+                      incl={part.salePriceIncl}
+                      excl={part.salePriceExcl}
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <span className="block whitespace-nowrap font-medium text-gray-900">
+                      {formatEuro(part.margin)}
+                    </span>
+                    <span className="block whitespace-nowrap text-xs text-gray-500">
+                      {formatMarginPct(part.marginPct)} · excl. btw
                     </span>
                   </TableCell>
                   <TableCell>
@@ -179,18 +202,29 @@ export function PartsTable({ items, groupByBrand }: PartsTableProps) {
                         {part.stockQuantity} (min. {part.minStock})
                       </dd>
                     </div>
+                    {/* Inkoop en verkoop in dezelfde vorm als in de tabel: incl. btw
+                        groot, excl. btw eronder (T18). */}
                     <div>
-                      <dt className="text-gray-500">Verkoop</dt>
-                      <dd className="text-gray-900">
-                        {formatEuro(part.salePrice)}{" "}
-                        <span className="text-gray-500">
-                          ({formatEuro(part.salePriceInclVat)} incl.)
-                        </span>
+                      <dt className="text-gray-500">Inkoop</dt>
+                      <dd>
+                        <PriceWithVat
+                          incl={part.purchasePriceIncl}
+                          excl={part.purchasePriceExcl}
+                        />
                       </dd>
                     </div>
                     <div>
-                      <dt className="text-gray-500">Marge</dt>
-                      <dd className="text-gray-900">
+                      <dt className="text-gray-500">Verkoop</dt>
+                      <dd>
+                        <PriceWithVat
+                          incl={part.salePriceIncl}
+                          excl={part.salePriceExcl}
+                        />
+                      </dd>
+                    </div>
+                    <div className="col-span-2">
+                      <dt className="text-gray-500">Marge (excl. btw)</dt>
+                      <dd className="font-medium text-gray-900">
                         {formatEuro(part.margin)} ({formatMarginPct(part.marginPct)})
                       </dd>
                     </div>

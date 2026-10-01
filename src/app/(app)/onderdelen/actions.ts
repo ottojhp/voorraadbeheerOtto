@@ -14,8 +14,18 @@
  * Archiveren zet `archivedAt` (soft delete, SPEC §3 regel 4) en verwijdert nooit
  * hard — de foreign key `Sale.partId` (`onDelete: Restrict`) zou een hard delete van
  * een verkocht onderdeel bovendien laten stuklopen.
+ *
+ * **Voorraadgrootboek (SPEC §4, T22).** Elke voorraadwijziging die hier gebeurt
+ * schrijft een `StockMutation`, in DEZELFDE transactie als de wijziging zelf: een
+ * beginvoorraad > 0 bij het aanmaken wordt een `INITIAL`-regel, een gewijzigde
+ * voorraad op het bewerkformulier een `CORRECTION`-regel met de oude en de nieuwe
+ * stand. Verandert de voorraad niet, dan komt er geen regel (`delta` mag niet 0 zijn,
+ * de database weigert dat met een CHECK). Faalt het schrijven van de regel, dan
+ * draait de hele transactie terug — er bestaat dus nooit een voorraadwijziging zonder
+ * grootboekregel.
  */
 
+import { StockMutationReason } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import type { ZodError } from "zod";
@@ -36,7 +46,7 @@ const PARTS_PATH = "/onderdelen";
 // Aanmaken / bewerken
 // ---------------------------------------------------------------------------
 
-/** Leest alle veertien formuliervelden uit `FormData` als platte strings. */
+/** Leest alle vijftien formuliervelden uit `FormData` als platte strings. */
 function readPartFormData(formData: FormData) {
   const field = (name: string) => formData.get(name)?.toString() ?? "";
   return {
@@ -49,8 +59,11 @@ function readPartFormData(formData: FormData) {
     description: field("description"),
     fitsModels: field("fitsModels"),
     location: field("location"),
-    purchasePrice: field("purchasePrice"),
-    salePrice: field("salePrice"),
+    purchasePriceExcl: field("purchasePriceExcl"),
+    // De incl./excl.-keuze bij de inkoopprijs (T18). Het schema rekent zelf terug
+    // naar excl. als hier "incl" staat, dus deze action hoeft daar niets mee.
+    purchasePriceVatMode: field("purchasePriceVatMode"),
+    salePriceIncl: field("salePriceIncl"),
     vatRate: field("vatRate"),
     stockQuantity: field("stockQuantity"),
     minStock: field("minStock"),
@@ -87,25 +100,46 @@ export async function createPartAction(
 
   let createdId: string;
   try {
-    const created = await prisma.part.create({
-      data: {
-        name: data.name,
-        sku: data.sku,
-        category: data.category,
-        brandId: data.brandId,
-        supplierId: data.supplierId,
-        barcode: data.barcode,
-        description: data.description,
-        fitsModels: data.fitsModels,
-        location: data.location,
-        purchasePrice: data.purchasePrice,
-        salePrice: data.salePrice,
-        vatRate: data.vatRate,
-        stockQuantity: data.stockQuantity,
-        minStock: data.minStock,
-      },
+    createdId = await prisma.$transaction(async (tx) => {
+      const created = await tx.part.create({
+        data: {
+          name: data.name,
+          sku: data.sku,
+          category: data.category,
+          brandId: data.brandId,
+          supplierId: data.supplierId,
+          barcode: data.barcode,
+          description: data.description,
+          fitsModels: data.fitsModels,
+          location: data.location,
+          purchasePriceExcl: data.purchasePriceExcl,
+          salePriceIncl: data.salePriceIncl,
+          vatRate: data.vatRate,
+          stockQuantity: data.stockQuantity,
+          minStock: data.minStock,
+        },
+        select: { id: true, stockQuantity: true },
+      });
+
+      // Beginvoorraad > 0 opent het grootboek van dit onderdeel (SPEC §4). Bij 0
+      // stuks is er niets veranderd en mag er ook geen regel komen: `delta` mag niet
+      // 0 zijn.
+      if (created.stockQuantity > 0) {
+        await tx.stockMutation.create({
+          data: {
+            partId: created.id,
+            delta: created.stockQuantity,
+            quantityBefore: 0,
+            quantityAfter: created.stockQuantity,
+            reason: StockMutationReason.INITIAL,
+            note: "Beginvoorraad bij het aanmaken van het onderdeel.",
+          },
+          select: { id: true },
+        });
+      }
+
+      return created.id;
     });
-    createdId = created.id;
   } catch (error) {
     const fieldError = fieldErrorFromUniqueConstraint(error);
     if (fieldError) {
@@ -143,24 +177,54 @@ export async function updatePartAction(
   const { data } = parsed;
 
   try {
-    await prisma.part.update({
-      where: { id },
-      data: {
-        name: data.name,
-        sku: data.sku,
-        category: data.category,
-        brandId: data.brandId,
-        supplierId: data.supplierId,
-        barcode: data.barcode,
-        description: data.description,
-        fitsModels: data.fitsModels,
-        location: data.location,
-        purchasePrice: data.purchasePrice,
-        salePrice: data.salePrice,
-        vatRate: data.vatRate,
-        stockQuantity: data.stockQuantity,
-        minStock: data.minStock,
-      },
+    await prisma.$transaction(async (tx) => {
+      // De stand vóór het opslaan, binnen de transactie gelezen. Het bewerkformulier
+      // zet de voorraad op een ABSOLUUT getal dat de gebruiker heeft ingetypt — het
+      // is een correctie, geen relatieve mutatie — dus de oude stand moet hier wel
+      // gelezen worden. Niet gevonden betekent: onderdeel bestaat niet meer; dan
+      // laat de `update` hieronder dat met P2025 weten.
+      const before = await tx.part.findUnique({
+        where: { id },
+        select: { stockQuantity: true },
+      });
+
+      const updated = await tx.part.update({
+        where: { id },
+        data: {
+          name: data.name,
+          sku: data.sku,
+          category: data.category,
+          brandId: data.brandId,
+          supplierId: data.supplierId,
+          barcode: data.barcode,
+          description: data.description,
+          fitsModels: data.fitsModels,
+          location: data.location,
+          purchasePriceExcl: data.purchasePriceExcl,
+          salePriceIncl: data.salePriceIncl,
+          vatRate: data.vatRate,
+          stockQuantity: data.stockQuantity,
+          minStock: data.minStock,
+        },
+        select: { id: true, stockQuantity: true },
+      });
+
+      // Alleen een echte voorraadwijziging krijgt een grootboekregel (SPEC §4).
+      // Wijzigt de gebruiker alleen een prijs of de locatie, dan verandert de
+      // voorraad niet en komt er niets in het grootboek.
+      if (before && before.stockQuantity !== updated.stockQuantity) {
+        await tx.stockMutation.create({
+          data: {
+            partId: updated.id,
+            delta: updated.stockQuantity - before.stockQuantity,
+            quantityBefore: before.stockQuantity,
+            quantityAfter: updated.stockQuantity,
+            reason: StockMutationReason.CORRECTION,
+            note: `Voorraad handmatig gewijzigd van ${before.stockQuantity} naar ${updated.stockQuantity} op het bewerkformulier.`,
+          },
+          select: { id: true },
+        });
+      }
     });
   } catch (error) {
     const fieldError = fieldErrorFromUniqueConstraint(error);

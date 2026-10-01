@@ -9,8 +9,10 @@
  * client components gebruikt kan worden zonder de Prisma-runtime mee te bundelen.
  * De `Category`-union komt uit `@/lib/labels`, die om dezelfde reden bestaat.
  *
- * Alle bedragen zijn EXCLUSIEF btw, behalve de velden met `InclVat` in de naam
- * (SPEC §3 regel 0).
+ * Elk geldveld zegt in zijn NAAM of het bedrag inclusief of exclusief btw is
+ * (`...Incl` / `...Excl`), zoals SPEC §3 regel 0 (v2.0) voorschrijft. Zo levert het
+ * verwisselen van de twee een compilerfout op in plaats van een stille rekenfout van
+ * ~21%. Marge en margepercentage staan altijd op excl.-basis.
  */
 
 import type { Category } from "@/lib/labels";
@@ -34,17 +36,27 @@ export interface PartDTO {
   sku: string;
   barcode: string | null;
 
-  /** Inkoopprijs per stuk, excl. btw. */
-  purchasePrice: number;
-  /** Verkoopprijs per stuk, excl. btw. */
-  salePrice: number;
+  /** Inkoopprijs per stuk, EXCL. btw — zoals opgeslagen (facturen zijn excl.). */
+  purchasePriceExcl: number;
+  /**
+   * Afgeleid: `purchasePriceExcl * (1 + vatRate / 100)`. Alleen om te TONEN, zodat de
+   * inkoopprijs op dezelfde manier op het scherm staat als de verkoopprijs (T18):
+   * incl. als hoofdbedrag, excl. eronder. Er wordt nooit met dit bedrag gerekend —
+   * marge en voorraadwaarde inkoop blijven op `purchasePriceExcl`.
+   */
+  purchasePriceIncl: number;
+  /** Verkoopprijs per stuk, INCL. btw — zoals opgeslagen; dit betaalt de klant. */
+  salePriceIncl: number;
   /** Btw-percentage, bv. `21` of `9` — géén fractie. */
   vatRate: number;
-  /** Afgeleid: `salePrice * (1 + vatRate / 100)`. Alleen tonen, nooit opslaan. */
-  salePriceInclVat: number;
-  /** Afgeleid: `salePrice - purchasePrice`, excl. btw. */
+  /**
+   * Afgeleid: `salePriceIncl / (1 + vatRate / 100)`. Het stuurgetal waarmee marge en
+   * rapportages rekenen; nooit opgeslagen (SPEC §3 regel 0).
+   */
+  salePriceExcl: number;
+  /** Afgeleid: `salePriceExcl - purchasePriceExcl`. Beide excl. btw. */
   margin: number;
-  /** Afgeleid: `margin / salePrice * 100`; `0` als `salePrice` 0 is. */
+  /** Afgeleid: `margin / salePriceExcl * 100`; `0` als `salePriceExcl` 0 is. */
   marginPct: number;
 
   stockQuantity: number;
@@ -78,11 +90,11 @@ export interface PartSaleOptionDTO {
   sku: string;
   barcode: string | null;
   stockQuantity: number;
-  /** Excl. btw. */
-  salePrice: number;
+  /** INCL. btw — zoals opgeslagen; dit is het bedrag dat de klant betaalt. */
+  salePriceIncl: number;
   vatRate: number;
-  /** Afgeleid, alleen voor weergave. */
-  salePriceInclVat: number;
+  /** Afgeleid uit `salePriceIncl`; het excl.-bedrag achter de kassaprijs. */
+  salePriceExcl: number;
 }
 
 /** Generiek pagineringsresultaat. */

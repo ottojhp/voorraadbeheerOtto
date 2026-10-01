@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Card } from "@/components/Card";
 import { EmptyState } from "@/components/EmptyState";
 import { PageHeader } from "@/components/PageHeader";
+import { MarginBasisNote, PriceWithVat } from "@/components/PriceWithVat";
 import {
   Table,
   TableBody,
@@ -68,7 +69,7 @@ export default async function RapportagesPage({
     <div>
       <PageHeader
         title="Rapportages"
-        description="Omzet, marge en bestsellers over de gekozen periode — alle bedragen exclusief btw."
+        description="Omzet, marge en bestsellers over de gekozen periode. De omzet staat met het bedrag inclusief btw als hoofdbedrag en het bedrag exclusief btw eronder; marge, margepercentage en alle uitsplitsingen hieronder rekenen op excl.-basis."
       />
 
       <ReportsFilters warning={period.warning} />
@@ -88,20 +89,27 @@ export default async function RapportagesPage({
         <>
           {/* Kerncijfers */}
           <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+            {/* Omzet: incl. btw als hoofdbedrag, excl. eronder (T18). De marge
+                ernaast blijft uitsluitend excl., met de toelichting erbij — dit is de
+                plek waar "btw is winst" het meeste geld zou kosten. */}
             <Card>
-              <p className="text-sm text-gray-500">Omzet (excl. btw)</p>
-              <p className="mt-1 text-xl font-semibold text-gray-900">
-                {formatEuro(data.summary.revenue)}
-              </p>
+              <p className="text-sm text-gray-500">Omzet</p>
+              <PriceWithVat
+                incl={data.summary.revenueIncl}
+                excl={data.summary.revenue}
+                size="lg"
+                className="mt-1"
+              />
             </Card>
             <Card>
-              <p className="text-sm text-gray-500">Marge</p>
+              <p className="text-sm text-gray-500">Marge (excl. btw)</p>
               <p className="mt-1 text-xl font-semibold text-gray-900">
                 {formatEuro(data.summary.margin)}
               </p>
+              <MarginBasisNote className="mt-0.5" />
             </Card>
             <Card>
-              <p className="text-sm text-gray-500">Margepercentage</p>
+              <p className="text-sm text-gray-500">Margepercentage (excl. btw)</p>
               <p className="mt-1 text-xl font-semibold text-gray-900">
                 {formatMarginPct(data.summary.marginPct)}
               </p>
@@ -128,11 +136,14 @@ export default async function RapportagesPage({
                   <p className="text-sm font-medium text-gray-700">
                     {getSaleChannelLabel(row.channel)}
                   </p>
-                  <p className="mt-1 text-lg font-semibold text-gray-900">
-                    {formatEuro(row.revenue)}
-                  </p>
+                  <PriceWithVat
+                    incl={row.revenueIncl}
+                    excl={row.revenue}
+                    size="md"
+                    className="mt-1"
+                  />
                   <p className="text-sm text-gray-500">
-                    Marge {formatEuro(row.margin)} · {row.itemsSold} stuks ·{" "}
+                    Marge {formatEuro(row.margin)} excl. btw · {row.itemsSold} stuks ·{" "}
                     {row.transactionCount} transacties
                   </p>
                 </div>
@@ -141,13 +152,13 @@ export default async function RapportagesPage({
           </Card>
 
           {/* Omzetverloop */}
-          <Card title="Omzetverloop" className="mb-6">
+          <Card title="Omzetverloop (excl. btw)" className="mb-6">
             <RevenueBarChart points={data.revenueOverTime} bucketSize={bucketSize} />
           </Card>
 
           {/* Omzet per merk en per categorie */}
           <div className="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
-            <Card title="Omzet per merk">
+            <Card title="Omzet per merk (excl. btw)">
               {data.revenueByBrand.length === 0 ? (
                 <p className="text-sm text-gray-500">Geen gegevens.</p>
               ) : (
@@ -159,8 +170,10 @@ export default async function RapportagesPage({
                     >
                       <span className="text-gray-900">{row.brandName}</span>
                       <span className="text-right text-gray-700">
-                        {formatEuro(row.revenue)}
-                        <span className="ml-1 text-gray-400">
+                        <span className="whitespace-nowrap">
+                          {formatEuro(row.revenue)}
+                        </span>
+                        <span className="ml-1 whitespace-nowrap text-gray-400">
                           ({formatEuro(row.margin)} marge)
                         </span>
                       </span>
@@ -170,7 +183,7 @@ export default async function RapportagesPage({
               )}
             </Card>
 
-            <Card title="Omzet per categorie">
+            <Card title="Omzet per categorie (excl. btw)">
               {data.revenueByCategory.length === 0 ? (
                 <p className="text-sm text-gray-500">Geen gegevens.</p>
               ) : (
@@ -182,8 +195,10 @@ export default async function RapportagesPage({
                     >
                       <span className="text-gray-900">{row.categoryLabel}</span>
                       <span className="text-right text-gray-700">
-                        {formatEuro(row.revenue)}
-                        <span className="ml-1 text-gray-400">
+                        <span className="whitespace-nowrap">
+                          {formatEuro(row.revenue)}
+                        </span>
+                        <span className="ml-1 whitespace-nowrap text-gray-400">
                           ({formatEuro(row.margin)} marge)
                         </span>
                       </span>
@@ -210,7 +225,9 @@ export default async function RapportagesPage({
               De CSV gebruikt een puntkomma als scheidingsteken en een komma als
               decimaalteken (Excel-NL-conventie) en bevat een UTF-8 BOM zodat Excel
               het bestand automatisch correct opent — zie de toelichting in{" "}
-              <code className="rounded bg-gray-100 px-1 py-0.5">@/lib/csv</code>.
+              <code className="rounded bg-gray-100 px-1 py-0.5">@/lib/csv</code>. De
+              kolommen omzet en marge staan <strong>exclusief btw</strong>; dat staat
+              ook in de kopregel van het bestand.
             </p>
 
             <Table className="hidden md:block">
@@ -220,8 +237,12 @@ export default async function RapportagesPage({
                   <TableHeaderCell>SKU</TableHeaderCell>
                   <TableHeaderCell>Merk</TableHeaderCell>
                   <TableHeaderCell className="text-right">Stuks</TableHeaderCell>
-                  <TableHeaderCell className="text-right">Omzet</TableHeaderCell>
-                  <TableHeaderCell className="text-right">Marge</TableHeaderCell>
+                  <TableHeaderCell className="text-right">
+                    Omzet (excl. btw)
+                  </TableHeaderCell>
+                  <TableHeaderCell className="text-right">
+                    Marge (excl. btw)
+                  </TableHeaderCell>
                 </tr>
               </TableHead>
               <TableBody>
@@ -257,7 +278,8 @@ export default async function RapportagesPage({
                   </p>
                   <p className="mt-1 text-sm text-gray-700">
                     {row.quantitySold} stuks · {formatEuro(row.revenue)} omzet ·{" "}
-                    {formatEuro(row.margin)} marge
+                    {formatEuro(row.margin)} marge{" "}
+                    <span className="text-gray-500">(beide excl. btw)</span>
                   </p>
                 </Card>
               ))}

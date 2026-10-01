@@ -12,8 +12,13 @@
  *    wordt `number`, `Date` wordt een ISO-string. Nooit een Prisma-object richting
  *    een client component.
  *
- * Alle bedragen zijn EXCLUSIEF btw (SPEC §3 regel 0). Het dashboard toont dus geen
- * kassabedragen; de UI labelt dat expliciet.
+ * Elk bedrag dat deze module teruggeeft zegt in zijn NAAM of het inclusief of
+ * exclusief btw is (`...Incl` / `...Excl`), zoals SPEC §3 regel 0 voorschrijft.
+ * Sinds T18 geeft de voorraadwaarde verkoop beide varianten terug: het incl.-bedrag
+ * (wat het schap aan de kassa opbrengt) en het teruggerekende excl.-bedrag (de basis
+ * waarop marge en rapportages rekenen). Het dashboard toont ze naast elkaar, elk
+ * gelabeld, want het zijn twee verschillende dingen. De voorraadwaarde INKOOP blijft
+ * excl. btw — dat is wat er op de leveranciersfacturen staat.
  *
  * Server-only: importeer dit bestand niet in een client component.
  */
@@ -53,10 +58,21 @@ export const RECENT_SALES_LIMIT = DEFAULT_RECENT_SALES_LIMIT;
 
 /** De kaarten bovenaan het dashboard. Alle bedragen EXCL. btw. */
 export interface DashboardTotalsDTO {
-  /** `Σ stockQuantity * purchasePrice` over niet-gearchiveerde onderdelen. */
-  stockValuePurchase: number;
-  /** `Σ stockQuantity * salePrice` over niet-gearchiveerde onderdelen. */
-  stockValueSale: number;
+  /** `Σ stockQuantity * purchasePriceExcl` over niet-gearchiveerde onderdelen. */
+  stockValuePurchaseExcl: number;
+  /**
+   * `Σ stockQuantity * (salePriceIncl / (1 + vatRate / 100))` over niet-gearchiveerde
+   * onderdelen: de verkoopwaarde op EXCL.-basis, want de opgeslagen verkoopprijs is
+   * incl. btw en btw is geen omzet van de winkel.
+   */
+  stockValueSaleExcl: number;
+  /**
+   * `Σ stockQuantity * salePriceIncl` over niet-gearchiveerde onderdelen: de
+   * verkoopwaarde van het schap tegen de prijzen die de klant betaalt (T18). Staat
+   * naast `stockValueSaleExcl` omdat dat twee verschillende dingen zijn — het
+   * dashboard labelt ze daarom allebei expliciet.
+   */
+  stockValueSaleIncl: number;
   /** Aantal unieke, niet-gearchiveerde onderdelen. */
   uniquePartCount: number;
   /** `Σ stockQuantity` over niet-gearchiveerde onderdelen. */
@@ -113,7 +129,7 @@ export interface DashboardDataDTO {
 /**
  * Zet een waarde uit een `$queryRaw`-resultaat om naar een gewone `number`.
  *
- * Dit is de valkuil van deze query. `SUM("stockQuantity" * "purchasePrice")` geeft in
+ * Dit is de valkuil van deze query. `SUM("stockQuantity" * "purchasePriceExcl")` geeft in
  * Postgres een `numeric` terug, en `numeric` past niet in een JavaScript `number`
  * zonder precisieverlies. De driver levert zo'n waarde daarom NIET als getal aan: hij
  * komt binnen als `string` of als `Decimal`-object, afhankelijk van Prisma-versie,
@@ -166,6 +182,7 @@ export function rawNumericToNumber(value: unknown): number {
 interface StockValueRow {
   purchaseValue: unknown;
   saleValue: unknown;
+  saleValueIncl: unknown;
 }
 
 /**
@@ -174,14 +191,16 @@ interface StockValueRow {
  * (geen rijen, of `null`-sommen) moet `0` opleveren, nooit `NaN`.
  */
 export function readStockValueRows(rows: unknown): {
-  stockValuePurchase: number;
-  stockValueSale: number;
+  stockValuePurchaseExcl: number;
+  stockValueSaleExcl: number;
+  stockValueSaleIncl: number;
 } {
   const row = Array.isArray(rows) ? (rows[0] as StockValueRow | undefined) : undefined;
 
   return {
-    stockValuePurchase: rawNumericToNumber(row?.purchaseValue),
-    stockValueSale: rawNumericToNumber(row?.saleValue),
+    stockValuePurchaseExcl: rawNumericToNumber(row?.purchaseValue),
+    stockValueSaleExcl: rawNumericToNumber(row?.saleValue),
+    stockValueSaleIncl: rawNumericToNumber(row?.saleValueIncl),
   };
 }
 
@@ -190,10 +209,20 @@ export function readStockValueRows(rows: unknown): {
 // ---------------------------------------------------------------------------
 
 /**
- * Voorraadwaarde inkoop én verkoop, EXCL. btw (SPEC §4).
+ * Voorraadwaarde inkoop (excl. btw) en verkoop (zowel incl. als excl. btw), SPEC §4.
+ *
+ * De inkoopprijs staat al excl. btw in de database en blijft dat hier: dat is het
+ * bedrag dat de winkel voor het schap betaald heeft. De verkoopprijs staat er sinds
+ * datamodel v2 INCL. btw in; die wordt hier één keer rechtstreeks gesommeerd (het
+ * incl.-bedrag, T18) en één keer teruggerekend naar excl. met
+ * `ROUND("salePriceIncl" / (1 + "vatRate" / 100), 2)` — per stuk afgerond, exact
+ * dezelfde afleiding als `priceExclVat` in `@/lib/money` doet voor één onderdeel.
+ * Zou je pas ná de sommatie afronden, dan kon het dashboardtotaal een paar cent
+ * verschillen van de som van de regels op `/onderdelen`, en dat is precies het soort
+ * verschil waar de eigenaar over valt.
  *
  * `prisma.part.aggregate` kan dit niet: dat sommeert één kolom, en hier is het de som
- * van een PRODUCT van twee kolommen (`stockQuantity * purchasePrice`). Het in Node
+ * van een PRODUCT van twee kolommen (`stockQuantity * purchasePriceExcl`). Het in Node
  * uitrekenen zou betekenen dat elk onderdeel opgehaald wordt — precies wat T14
  * verbiedt. Dus één `$queryRaw` die beide sommen in één scan over `Part` doet.
  *
@@ -207,13 +236,18 @@ export function readStockValueRows(rows: unknown): {
  * omdat `numeric` afhankelijk van de driver als string of `Decimal` binnenkomt.
  */
 export async function getStockValue(): Promise<{
-  stockValuePurchase: number;
-  stockValueSale: number;
+  stockValuePurchaseExcl: number;
+  stockValueSaleExcl: number;
+  stockValueSaleIncl: number;
 }> {
   const rows = await prisma.$queryRaw<StockValueRow[]>`
     SELECT
-      COALESCE(SUM("stockQuantity" * "purchasePrice"), 0) AS "purchaseValue",
-      COALESCE(SUM("stockQuantity" * "salePrice"), 0)     AS "saleValue"
+      COALESCE(SUM("stockQuantity" * "purchasePriceExcl"), 0) AS "purchaseValue",
+      COALESCE(
+        SUM("stockQuantity" * ROUND("salePriceIncl" / (1 + "vatRate" / 100), 2)),
+        0
+      ) AS "saleValue",
+      COALESCE(SUM("stockQuantity" * "salePriceIncl"), 0) AS "saleValueIncl"
     FROM "Part"
     WHERE "archivedAt" IS NULL
   `;
@@ -259,8 +293,9 @@ export async function getDashboardTotals(): Promise<DashboardTotalsDTO> {
   ]);
 
   return {
-    stockValuePurchase: stockValue.stockValuePurchase,
-    stockValueSale: stockValue.stockValueSale,
+    stockValuePurchaseExcl: stockValue.stockValuePurchaseExcl,
+    stockValueSaleExcl: stockValue.stockValueSaleExcl,
+    stockValueSaleIncl: stockValue.stockValueSaleIncl,
     // Lege database: `_count._all` is 0 en `_sum.stockQuantity` is `null`.
     uniquePartCount: rawNumericToNumber(aggregate?._count?._all),
     totalStockQuantity: rawNumericToNumber(aggregate?._sum?.stockQuantity),

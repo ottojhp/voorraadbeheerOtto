@@ -415,6 +415,220 @@ opzet voor de eigenaar.
 
 ---
 
+## T17 — Datamodel v2: prijzen incl. btw, leveranciersartikelnummer, voorraadmutaties
+**Status:** review
+**Afhankelijk van:** —
+
+**Beschrijving**
+Eén migratie die drie dingen regelt, zodat er niet drie keer aan het schema geraakt wordt.
+Zie SPEC §3 regel 0 (herschreven in v2.0).
+
+**Acceptatiecriteria**
+- [ ] `Part.salePrice` wordt hernoemd naar `salePriceIncl` en bevat voortaan het bedrag
+      **inclusief** btw. `Part.purchasePrice` wordt `purchasePriceExcl`. De hernoeming is
+      opzettelijk: TypeScript moet elke gebruiksplek als fout markeren, zodat niemand een
+      incl.-bedrag met een excl.-bedrag vergelijkt.
+- [ ] Idem op `Sale`: `salePriceAtSale` → `salePriceInclAtSale`,
+      `purchasePriceAtSale` → `purchasePriceExclAtSale`. `vatRateAtSale` blijft.
+- [ ] De migratie zet bestaande waarden om: `salePriceIncl = ROUND(salePrice * (1 + vatRate/100), 2)`
+      voor `Part`, en dezelfde omzetting met `vatRateAtSale` voor `Sale`. De
+      productiedatabase bevat nu 0 onderdelen, maar de lokale database wél — de omzetting
+      moet daar aantoonbaar kloppen.
+- [ ] Nieuw veld `Part.supplierArticleNumber String?`, met index. Dit is het nummer dat de
+      leverancier of fabrikant op de verpakking drukt; T20 matcht daarop.
+- [ ] Nieuw model `StockMutation`: id, partId (relatie, onDelete Restrict), `delta Int`,
+      `quantityBefore Int`, `quantityAfter Int`, `reason` (enum), `note String?`,
+      `saleId String?` (gevuld als de mutatie bij een verkoop hoort), `createdAt`.
+      Indexen op partId, createdAt en reason.
+- [ ] Enum `StockMutationReason`: `DELIVERY`, `CORRECTION`, `COUNT`, `SALE`, `WORKSHOP`,
+      `INITIAL`.
+- [ ] In het schema staat als comment waarom "wie" ontbreekt: de applicatie heeft één
+      gedeeld wachtwoord en geen gebruikersaccounts, dus een persoon is niet vast te
+      leggen. Alleen wanneer, wat en waarom.
+- [ ] `prisma migrate deploy` slaagt tegen de lokale database én tegen Neon.
+      *(Bouwsessie 2026-09-30: lokaal geslaagd en de omzetting is aantoonbaar correct;
+      Neon is NIET aangeraakt, conform de opdracht — die stap doet de projectmanager.)*
+- [ ] `prisma/seed.ts` is bijgewerkt naar de nieuwe velden en schrijft voor elk
+      geseed onderdeel een `INITIAL`-mutatie en voor elke verkoop een `SALE`- of
+      `WORKSHOP`-mutatie, zodat de seed een consistent grootboek oplevert.
+- [ ] Alle bestaande tests zijn meeverhuisd en groen; `tsc`, ESLint en `next build` schoon.
+
+---
+
+## T18 — Prijzen inclusief btw tonen en invoeren
+**Status:** review
+**Afhankelijk van:** T17
+
+**Beschrijving**
+Incl. btw wordt overal het hoofdbedrag; excl. staat er klein onder. Invoer verandert mee.
+
+**Acceptatiecriteria**
+- [ ] Voorraadoverzicht, detailpagina, verkoopscherm, dashboard en rapportages tonen de
+      verkoopprijs **incl. btw als hoofdbedrag**, met het excl.-bedrag kleiner eronder en
+      duidelijk gelabeld.
+- [ ] De inkoopprijs wordt óók incl. btw als hoofdbedrag getoond, met excl. eronder.
+- [ ] Teksten als "alle bedragen exclusief btw" op het dashboard zijn aangepast.
+- [ ] In het onderdeelformulier voer je de **verkoopprijs incl. btw** in; het excl.-bedrag
+      wordt live meeberekend en getoond. Voer je €42,00 in, dan staat er na opslaan en
+      herladen exact €42,00 — test dit met minstens drie bedragen waarbij de oude aanpak
+      een cent verloor (bv. 10,00 / 19,99 / 24,95 bij 21%).
+- [ ] Bij de **inkoopprijs** kies je met een schakelaar of je incl. of excl. invult;
+      standaard excl., want leveranciersfacturen zijn excl. De keuze is zichtbaar, niet
+      verstopt.
+- [ ] **Marge blijft op excl.-basis** (verkoop excl. − inkoop excl.) en de UI zegt dat er
+      expliciet bij, zodat niemand denkt dat de btw winst is.
+- [ ] Voorraadwaarde op het dashboard toont beide: inkoopwaarde excl. en verkoopwaarde
+      incl., elk gelabeld.
+- [ ] Rapportages (omzet, marge, CSV-export) rekenen aantoonbaar nog steeds excl. btw en
+      geven dezelfde cijfers als vóór de migratie, op afrondingscenten na. Toon in de
+      notitie een voor/na-vergelijking van minstens één periode.
+- [ ] Alle bedragen via `formatEuro`; geen losse berekeningen in componenten.
+
+---
+
+## T19 — Snel voorraad aanpassen
+**Status:** todo
+**Afhankelijk van:** T17
+
+**Beschrijving**
+Voorraad wijzigen zonder het bewerkformulier te openen, op detailpagina én in de lijst.
+Elke wijziging schrijft een regel in `StockMutation`.
+
+**Acceptatiecriteria**
+- [ ] Op `/onderdelen/[id]` staan bij Voorraad knoppen **−** en **+** (±1), plus een knop
+      voor "exact aantal instellen" en een voor "bijboeken" (bv. levering van 10 stuks).
+- [ ] Bij bijboeken en bij exact instellen kies je een reden: levering, correctie of
+      telling. Die belandt in `StockMutation.reason`.
+- [ ] Dezelfde −/+ knoppen staan op elke kaart en elke rij in `/onderdelen`, zodat de
+      detailpagina niet nodig is.
+- [ ] De wijziging is **optimistisch**: de UI springt direct, met een korte bevestiging en
+      een **ongedaan maken**-knop die de mutatie terugdraait (als nieuwe tegengestelde
+      mutatie, niet door de oude regel te wissen).
+- [ ] Mislukt de server-actie, dan springt de UI terug naar de oude waarde met een
+      duidelijke melding. Geen stille mislukking.
+- [ ] **Voorraad kan nooit onder 0.** Server-side afgedwongen binnen dezelfde transactie
+      als de mutatieregel, met dezelfde voorwaardelijke-update-aanpak als in
+      `sales.ts` — een lees-dan-schrijf is niet veilig bij twee tegelijk openstaande
+      telefoons.
+- [ ] Voorraadwijziging en `StockMutation`-regel staan altijd in één transactie.
+- [ ] Het dashboard telt "onder minimumvoorraad" direct goed na een wijziging
+      (`revalidatePath` op zowel `/` als `/onderdelen`).
+- [ ] Raakvlakken minimaal 44×44px; op 375px goed te bedienen met één duim. Dit wordt in
+      de werkplaats op een telefoon gebruikt.
+- [ ] Snel twee keer op **+** tikken levert +2 op, niet +1 en niet een verloren tik.
+
+---
+
+## T20 — Artikelnummer scannen met tekstherkenning (OCR)
+**Status:** todo
+**Afhankelijk van:** T17, T19
+
+**Beschrijving**
+Met de camera het artikelnummer van een verpakking of label lezen en het bijbehorende
+onderdeel vinden. De bestaande barcodescanner (T10) blijft bestaan en wordt hergebruikt.
+
+**Acceptatiecriteria**
+- [ ] Knop "Scan" bovenaan `/onderdelen` en in de navigatie.
+- [ ] Live camerabeeld met een richtkader; OCR via Tesseract.js, en via de `TextDetector`
+      API waar die bestaat. De bibliotheek wordt **dynamisch geladen**, niet in de
+      hoofdbundel — Tesseract is enkele megabytes en mag het openen van de app niet
+      vertragen.
+- [ ] Herkende tekst wordt gematcht tegen `sku`, `barcode` én `supplierArticleNumber`.
+- [ ] Bij het matchen wordt genormaliseerd: hoofdletters, spaties en streepjes genegeerd,
+      en de veelvoorkomende OCR-verwisselingen O/0, I/1/l, S/5, B/8, Z/2 als gelijk
+      behandeld. Deze normalisatie zit in een **pure functie met tests**, los van de UI.
+- [ ] Er wordt **nooit automatisch iets gewijzigd**: de app toont het gevonden onderdeel,
+      of een paar kandidaten, en vraagt om bevestiging.
+- [ ] Na bevestiging opent direct het snel-aanpassen-scherm uit T19.
+- [ ] Geen match: de herkende tekst wordt getoond en is handmatig te corrigeren of als
+      zoekopdracht te gebruiken.
+- [ ] Ziet de camera een **barcode**, dan wordt die voorrang gegeven boven OCR — een
+      barcode is betrouwbaar, OCR op een bedrukte verpakking niet.
+- [ ] Geweigerde cameratoestemming, geen camera, of geen HTTPS geven elk een eigen
+      Nederlandse melding met terugval op handmatig zoeken.
+- [ ] Camerastream stopt bij sluiten en bij unmount.
+- [ ] De notitie in PROGRESS.md vermeldt eerlijk hoe betrouwbaar de herkenning in de
+      praktijk was, inclusief wat er misging.
+
+---
+
+## T21 — Debugcode uit het verkoopscherm verwijderen
+**Status:** review
+**Afhankelijk van:** —
+**Prioriteit: eerst.** Dit staat nu in productie.
+
+**Beschrijving**
+In `src/app/(app)/verkoop/page.tsx` staat achtergebleven scaffolding uit T12, waarvan de
+bouwende agent halverwege werd afgebroken. De projectmanager heeft dat destijds
+goedgekeurd op groene tests; deze code zat in geen enkele test.
+
+**Acceptatiecriteria**
+- [ ] Het hardgecodeerde onderdeel achter zoekterm `"demo"` (regels ~119-133, met
+      `id: "demo_1"`) is volledig weg, inclusief de uitzondering `query !== "demo"` in de
+      voorwaarde erboven. Zoeken op "demo" doet daarna gewoon een databasezoekopdracht.
+- [ ] De `.catch(() => [])` op `listRecentSales` is weg. Faalt die query, dan ziet de
+      gebruiker een duidelijke Nederlandse foutmelding in plaats van een lege lijst
+      (SPEC §F8: geen stille mislukkingen). De rest van het verkoopscherm moet blijven
+      werken als alleen de lijst recente verkopen faalt.
+- [ ] Er staat nergens meer `TIJDELIJK` in `src/`.
+- [ ] Controleer de andere `.catch(...)` in `src/app/(app)/onderdelen/BarcodeField.tsx`
+      (regel ~77): slikt die ook een fout stil weg? Zo ja, geef de gebruiker een melding.
+- [ ] Rendertest: `/verkoop` geeft 200, en zoeken op "demo" levert geen spookproduct meer.
+
+---
+
+## T22 — Grootboek sluitend maken: verkopen en nieuwe onderdelen loggen
+**Status:** review
+**Afhankelijk van:** T17
+
+**Beschrijving**
+T17 leverde de `StockMutation`-tabel en een sluitend grootboek ná de seed, maar de paden
+die daarna voorraad wijzigen schrijven er nog niet in. Vanaf de eerste verkoop loopt het
+grootboek dus achter. Dat is precies de situatie die bij de keuze voor dit grootboek
+vermeden moest worden.
+
+**Acceptatiecriteria**
+- [ ] `registerSale()` in `src/lib/queries/sales.ts` schrijft binnen **dezelfde
+      transactie** een `StockMutation` met reason `SALE` of `WORKSHOP` (afhankelijk van
+      het kanaal), `saleId` gevuld, en kloppende `quantityBefore`/`quantityAfter`.
+- [ ] Een nieuw onderdeel met een beginvoorraad > 0 schrijft een `INITIAL`-mutatie.
+- [ ] Wijzigt het bewerkformulier de voorraad, dan schrijft dat een `CORRECTION`-mutatie
+      met de oude en nieuwe stand. Wijzigt het de voorraad niet, dan geen mutatie.
+- [ ] Er is een test die bewijst dat na een verkoop de som van alle mutaties van een
+      onderdeel exact gelijk is aan `stockQuantity`.
+- [ ] Faalt het schrijven van de mutatie, dan draait de hele transactie terug: er mag geen
+      voorraadwijziging bestaan zonder mutatieregel.
+
+---
+
+## T23 — Kanaalkeuze in het verkoopscherm losmaken van React-state
+**Status:** todo
+**Afhankelijk van:** —
+
+**Beschrijving**
+Bij T18 bleek een gecontroleerde radiogroep binnen een server-action-formulier uit de pas
+te kunnen lopen met wat er verstuurd wordt: na een validatiefout rendert de server het
+formulier opnieuw met `checked` op de standaardwaarde, terwijl React de DOM niet bijwerkt
+omdat de prop in zijn ogen niet veranderde. Het scherm toonde "incl. btw", het formulier
+verstuurde "excl." — een stille fout van 21%.
+
+`src/app/(app)/verkoop/SaleScreen.tsx` gebruikt hetzelfde patroon voor de kanaalkeuze
+balie/werkplaats. Nu niet waarneembaar omdat de selectie na elke verkoop gewist wordt,
+maar het gevolg zou zijn dat werkplaatsverbruik als balieomzet geboekt wordt — en dat
+vervuilt precies de uitsplitsing waarvoor dat kanaal bestaat.
+
+**Acceptatiecriteria**
+- [ ] De kanaalkeuze gebruikt hetzelfde patroon als `PartForm` na de fix: één verborgen
+      veld dat uit de React-state gevuld wordt, met `type="button"`-knoppen en
+      `aria-pressed` ernaast. De verstuurde waarde kan dan per constructie niet afwijken
+      van wat op het scherm staat.
+- [ ] Test die bewijst dat na een mislukte verkoop (bv. onvoldoende voorraad) de getoonde
+      kanaalkeuze en de verstuurde waarde gelijk blijven.
+- [ ] Werkorderreferentie blijft eveneens staan na een fout.
+- [ ] Zoek of ditzelfde patroon nog ergens anders in `src/app/` zit en meld wat je vindt.
+
+---
+
 ## Feedback van review
 
 ### Reviewronde 1 — 2026-09-22 (PM)
@@ -581,3 +795,59 @@ Ze worden niet tussendoor gebouwd.
 - (2026-09-21, PM) Verkoop corrigeren/storneren staat in SPEC §9 als backlog. Sterke
   aanbeveling om dit als T17 op te nemen zodra v1 draait: een mistap aan de balie is
   nu alleen via de database terug te draaien.
+
+- (2026-09-30, bouwsessie T17) **Het voorraadgrootboek loopt vanaf nu achter op de
+  werkelijkheid.** T17 levert het model `StockMutation` en een sluitend grootboek in
+  de seed, maar geen enkele schermactie schrijft er een regel in: `registerSale()` in
+  `src/lib/queries/sales.ts` verlaagt de voorraad zonder mutatieregel, en het
+  onderdeelformulier (`src/app/(app)/onderdelen/actions.ts`) legt geen
+  `INITIAL`-regel aan voor een nieuw onderdeel met beginvoorraad. T19 dekt alleen de
+  −/+-knoppen, niet de verkoopactie. Direct na de seed is het grootboek sluitend;
+  elke verkoop daarna maakt het onvolledig. Voorstel: een eigen taak vóór of samen
+  met T19 die (a) de verkooptransactie een `SALE`/`WORKSHOP`-regel laat schrijven
+  binnen dezelfde `prisma.$transaction`, en (b) het aanmaken van een onderdeel een
+  `INITIAL`-regel. Niet gebouwd, want het staat niet in de acceptatiecriteria van T17.
+
+- (2026-09-30, bouwsessie T17) **Leftover debugcode in `src/app/(app)/verkoop/page.tsx`.**
+  Twee blokken met de opmerking `// TIJDELIJK`, beide al aanwezig vóór T17:
+  1. een hardgecodeerd demo-onderdeel ("Remblokset voor Vespa Primavera", sku
+     REM-001) dat als geselecteerd onderdeel verschijnt zodra iemand in het
+     verkoopscherm op "demo" zoekt. Het bestaat niet in de database, dus bevestigen
+     loopt op een fout;
+  2. `await listRecentSales(RECENT_SALES_LIMIT).catch(() => [])` — dat slikt élke
+     databasefout stil weg en toont dan "geen recente verkopen" in plaats van een
+     melding. Precies het soort stille mislukking dat de reviewrondes eerder hebben
+     gekost.
+  Alleen de veldnamen zijn tijdens T17 meegehernoemd; verder onaangeroerd.
+
+- (2026-10-01, bouwsessie T21+T22) **`grep` slaat drie bronbestanden over zonder `-a`.**
+  `src/lib/auth.ts`, `src/lib/__tests__/auth.test.ts` en
+  `src/components/__tests__/barcode-scanner.test.ts` bevatten met opzet literal
+  control-characters (in een regex en in testdata) en worden daardoor als binair
+  gezien: `grep -rn "..." src/` slaat ze stil over en meldt dat niet. Wie later naar
+  achtergebleven markers of patronen zoekt moet `grep -ra` gebruiken. Niets kapot,
+  maar het maakt een "nul treffers"-controle misleidend. Niet gebouwd/gewijzigd, want
+  het staat buiten T21/T22.
+
+- (2026-10-01, bouwsessie T18) **De kanaalkeuze in het verkoopscherm is een
+  gecontroleerde radiogroep en loopt hetzelfde risico als de incl./excl.-schakelaar
+  die in T18 is omgebouwd.** In `src/app/(app)/verkoop/SaleScreen.tsx` staan "Balie"
+  en "Werkplaats" als `<input type="radio" checked={...}>` binnen een formulier dat
+  door een server action wordt verwerkt. Bij de inkoopschakelaar bleek dat na een
+  serverrespons de DOM-`checked` kan terugvallen op wat de SERVER rendert, terwijl de
+  React-state (en dus de markering op het scherm) iets anders zegt — het scherm toont
+  dan A en het formulier verstuurt B. Bij het verkoopscherm is dat nu niet
+  waarneembaar, omdat de selectie na een geslaagde verkoop sowieso gewist wordt en een
+  foutpad het kanaal niet opnieuw laat verzenden. Het patroon is er wel, en het
+  gevolg zou zijn dat een werkplaatsregel als balieverkoop geboekt wordt. Voorstel:
+  dezelfde aanpak als in `PartForm` (één verborgen veld gevuld vanuit de state, met
+  `type="button"`-knoppen ernaast). Niet gebouwd: het staat buiten T18.
+
+- (2026-10-01, bouwsessie T21+T22) **Voorraadcorrectie op het bewerkformulier is een
+  absolute overschrijving.** `updatePartAction` leest de oude stand binnen de
+  transactie en zet de voorraad daarna op het ingetypte getal (nu met een
+  `CORRECTION`-regel, T22). Slaan twee mensen tegelijk hetzelfde formulier op, dan
+  wint de laatste; het grootboek klopt dan nog wel met de eindstand, maar de
+  tussentijdse correctie van de ander is overschreven. Een echt
+  voorraadcorrectiescherm (verschil invoeren in plaats van eindstand, met eigen
+  reden `COUNT`/`DELIVERY`) zou dat voorkomen. Staat niet in T22.

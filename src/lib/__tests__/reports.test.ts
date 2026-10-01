@@ -307,7 +307,42 @@ describe("summaryRowToDto", () => {
 
   it("valt terug op nullen bij een ontbrekende rij (lege periode)", () => {
     const dto = summaryRowToDto(undefined);
-    expect(dto).toEqual({ revenue: 0, margin: 0, marginPct: 0, itemsSold: 0, transactionCount: 0 });
+    expect(dto).toEqual({
+      revenue: 0,
+      revenueIncl: 0,
+      margin: 0,
+      marginPct: 0,
+      itemsSold: 0,
+      transactionCount: 0,
+    });
+  });
+
+  it("neemt de bruto-omzet incl. btw over zonder er marge mee te berekenen (T18)", () => {
+    // 121,00 incl. btw bij 21% is 100,00 excl. De marge en het margepercentage
+    // MOETEN op de excl.-omzet gebaseerd blijven: zou `revenueIncl` meegerekend
+    // worden, dan kwam het percentage op 24,8% uit in plaats van 30%.
+    const dto = summaryRowToDto({
+      revenue: "100.00",
+      revenueIncl: "121.00",
+      margin: "30.00",
+      itemsSold: "4",
+      transactionCount: BigInt(2),
+    });
+    expect(dto.revenue).toBe(100);
+    expect(dto.revenueIncl).toBe(121);
+    expect(dto.margin).toBe(30);
+    expect(dto.marginPct).toBe(30);
+  });
+
+  it("geeft bruto-omzet 0 als de incl.-kolom ontbreekt, nooit NaN", () => {
+    const dto = summaryRowToDto({
+      revenue: "100.00",
+      margin: "30.00",
+      itemsSold: "4",
+      transactionCount: BigInt(2),
+    });
+    expect(dto.revenueIncl).toBe(0);
+    expect(Number.isNaN(dto.revenueIncl)).toBe(false);
   });
 });
 
@@ -318,7 +353,13 @@ describe("summaryRowToDto", () => {
 describe("getReportSummary (gemockt)", () => {
   it("geeft filterwaarden als queryparameter mee, nooit als tekst in de SQL zelf", async () => {
     prismaMock.$queryRaw.mockResolvedValueOnce([
-      { revenue: "300.00", margin: "75.00", itemsSold: "6", transactionCount: BigInt(3) },
+      {
+        revenue: "300.00",
+        revenueIncl: "363.00",
+        margin: "75.00",
+        itemsSold: "6",
+        transactionCount: BigInt(3),
+      },
     ]);
 
     const from = new Date("2026-09-01T00:00:00.000Z");
@@ -326,7 +367,14 @@ describe("getReportSummary (gemockt)", () => {
 
     const dto = await getReportSummary({ from, to, channel: "COUNTER", category: "HELMET" });
 
-    expect(dto).toEqual({ revenue: 300, margin: 75, marginPct: 25, itemsSold: 6, transactionCount: 3 });
+    expect(dto).toEqual({
+      revenue: 300,
+      revenueIncl: 363,
+      margin: 75,
+      marginPct: 25,
+      itemsSold: 6,
+      transactionCount: 3,
+    });
 
     // `$queryRaw` is aangeroepen als tagged template: (strings, ...values). De
     // enige interpolatie in de buitenste template is `${where}` — een
@@ -336,16 +384,44 @@ describe("getReportSummary (gemockt)", () => {
     // SQL-tekstfragmenten (dat zou betekenen dat ze in de queryTEKST zelf zijn
     // geplakt, oftewel string-interpolatie — precies wat SQL-injectie mogelijk zou
     // maken).
-    const [outerStrings, where] = prismaMock.$queryRaw.mock.calls[0] as [
-      TemplateStringsArray,
-      { strings: string[]; values: unknown[] },
-    ];
-    const outerSqlText = outerStrings.join("");
-    const whereSqlText = where.strings.join("");
+    type SqlFragment = { strings: string[]; values: unknown[] };
 
-    expect(outerSqlText).toContain('"salePriceAtSale" - s."purchasePriceAtSale"');
-    expect(whereSqlText).not.toContain("COUNTER");
-    expect(whereSqlText).not.toContain("HELMET");
+    const [outerStrings, ...interpolated] = prismaMock.$queryRaw.mock
+      .calls[0] as [TemplateStringsArray, ...SqlFragment[]];
+
+    // Sinds datamodel v2 interpoleert de query meerdere `Prisma.Sql`-fragmenten: het
+    // afgeleide excl.-bedrag (twee keer) en als laatste de WHERE-clause. De
+    // WHERE-clause is dus het LAATSTE fragment, niet meer het eerste.
+    const where = interpolated[interpolated.length - 1];
+
+    // De volledige SQL-tekst: het buitenste template plus de tekstfragmenten van
+    // alles wat erin geïnterpoleerd is. Filterwaarden mogen in geen van deze
+    // fragmenten voorkomen — staan ze er wel in, dan zijn ze in de queryTEKST
+    // geplakt in plaats van als gebonden parameter meegegeven (SQL-injectie).
+    const allSqlText = [
+      outerStrings.join(""),
+      ...interpolated.map((fragment) => fragment.strings.join("")),
+    ].join("");
+
+    // Omzet en marge rekenen op EXCL.-basis: de historisch vastgelegde incl.-prijs
+    // wordt in SQL teruggerekend met het btw-tarief van dat moment (SPEC §3 regel 0).
+    expect(allSqlText).toContain(
+      'ROUND(s."salePriceInclAtSale" / (1 + s."vatRateAtSale" / 100), 2)',
+    );
+    expect(allSqlText).toContain('s."purchasePriceExclAtSale"');
+    // De oude, incl.-vergelijking mag niet meer voorkomen: die zou de marge met de
+    // btw erin berekenen.
+    expect(allSqlText).not.toContain('s."salePriceInclAtSale" - ');
+
+    // De bruto-omzet incl. btw (T18) wordt rechtstreeks uit de opgeslagen
+    // incl.-prijs gesommeerd — niet teruggerekend en weer omhoog gerekend, want dan
+    // zou er een afrondingscent in sluipen in een bedrag dat werkelijk betaald is.
+    expect(allSqlText).toContain(
+      'SUM(s.quantity * s."salePriceInclAtSale"), 0) AS "revenueIncl"',
+    );
+
+    expect(allSqlText).not.toContain("COUNTER");
+    expect(allSqlText).not.toContain("HELMET");
     expect(where.values).toContain("COUNTER");
     expect(where.values).toContain("HELMET");
     expect(where.values).toContain(from);
