@@ -12,6 +12,7 @@ import { getPartById } from "@/lib/queries/parts";
 
 import { archivePartAction } from "../actions";
 import { ArchivePartButton } from "../ArchivePartButton";
+import { StockStepper } from "../StockStepper";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -192,17 +193,35 @@ export default async function OnderdeelDetailPagina({
               <MarginBasisNote className="mt-0.5" />
             </div>
             <div>
-              <dt className="text-sm text-gray-500">Voorraad</dt>
-              <dd className="text-gray-900">
-                {part.stockQuantity} stuks
-                {part.isLowStock && (
-                  <span className="ml-1 text-amber-700">(onder minimum)</span>
-                )}
-              </dd>
-            </div>
-            <div>
               <dt className="text-sm text-gray-500">Minimumvoorraad</dt>
               <dd className="text-gray-900">{part.minStock} stuks</dd>
+            </div>
+            {/* Voorraad met de snelle knoppen (T19): ±1 met één duim, plus
+                bijboeken en exact instellen. Over de volle breedte van de kaart,
+                want op 375px moeten de knoppen naast elkaar passen. */}
+            <div className="sm:col-span-2">
+              <dt className="text-sm text-gray-500">Voorraad</dt>
+              <dd className="mt-1">
+                <StockStepper
+                  partId={part.id}
+                  partName={part.name}
+                  stockQuantity={part.stockQuantity}
+                  minStock={part.minStock}
+                  variant="full"
+                  disabled={isArchived}
+                />
+                {part.isLowStock && !isArchived && (
+                  <p className="mt-1 text-sm text-amber-700">
+                    Onder de minimumvoorraad van {part.minStock} stuks.
+                  </p>
+                )}
+                {isArchived && (
+                  <p className="mt-1 text-sm text-gray-600">
+                    Dit onderdeel is gearchiveerd; de voorraad kan niet meer
+                    gewijzigd worden.
+                  </p>
+                )}
+              </dd>
             </div>
           </dl>
         </Card>

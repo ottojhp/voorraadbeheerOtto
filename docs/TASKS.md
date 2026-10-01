@@ -487,7 +487,7 @@ Incl. btw wordt overal het hoofdbedrag; excl. staat er klein onder. Invoer veran
 ---
 
 ## T19 — Snel voorraad aanpassen
-**Status:** todo
+**Status:** review
 **Afhankelijk van:** T17
 
 **Beschrijving**
@@ -851,3 +851,26 @@ Ze worden niet tussendoor gebouwd.
   tussentijdse correctie van de ander is overschreven. Een echt
   voorraadcorrectiescherm (verschil invoeren in plaats van eindstand, met eigen
   reden `COUNT`/`DELIVERY`) zou dat voorkomen. Staat niet in T22.
+
+- (2026-10-01, bouwsessie T19) **Het bewerkformulier blijft een absolute
+  overschrijving zonder voorwaardelijke update.** T19 heeft `adjustStock()` met de
+  compare-and-set uit `sales.ts`, maar `updatePartAction` in
+  `src/app/(app)/onderdelen/actions.ts` schrijft de voorraad nog steeds met een kale
+  `update` op het ingetypte getal. De observatie hierboven (T21+T22) staat daarmee nog
+  open; het is nu wel in één stap op te lossen door dat pad `adjustStock()` met
+  `mode: "absolute"` te laten gebruiken. Buiten T19 gelaten: dat formulier valt onder
+  T08/T22.
+
+- (2026-10-01, bouwsessie T19) **Het voorraadgrootboek is nergens te zien.** Elke
+  mutatie wordt nu netjes weggeschreven (INITIAL, SALE, WORKSHOP, DELIVERY, CORRECTION,
+  COUNT) en is sluitend, maar er is geen scherm dat de regels van een onderdeel toont.
+  Daardoor kan de garagehouder een verkeerde boeking van gisteren niet terugvinden —
+  de "ongedaan maken"-knop uit T19 werkt alleen zolang de bevestiging op het scherm
+  staat. Voorstel: een eenvoudige mutatiegeschiedenis op `/onderdelen/[id]`, met de
+  mogelijkheid om een oudere regel tegen te boeken. Buiten T19 gelaten.
+
+- (2026-10-01, bouwsessie T19) **Kolom Voorraad maakt de tabel op `/onderdelen`
+  breder.** De −/+ knoppen (48px elk) kosten ~170px in de tabelcel, waardoor de tabel
+  op een smalle laptop eerder horizontaal scrollt. Op 375px speelt het niet (daar staat
+  de kaartweergave). Als het hindert: in de tabel een compactere variant (bv. 44px en
+  minder tussenruimte) of de knoppen pas tonen bij hover/focus.

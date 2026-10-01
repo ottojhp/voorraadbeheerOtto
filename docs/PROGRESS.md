@@ -6,6 +6,152 @@ in `docs/TASKS.md`.
 
 Nieuwste notitie bovenaan.
 
+## [T19] Snel voorraad aanpassen — 2026-10-01
+**Status:** klaar voor review
+
+**Aangemaakte bestanden:** src/lib/validation/stock.ts, src/lib/queries/stock.ts,
+src/app/(app)/onderdelen/StockStepper.tsx, src/app/(app)/onderdelen/stock-actions.ts,
+src/app/(app)/onderdelen/stock-state.ts, src/lib/__tests__/stock.test.ts,
+src/lib/__tests__/stock-ui.test.ts
+
+**Gewijzigde bestanden:** src/lib/labels.ts, src/lib/queries/types.ts,
+src/app/(app)/onderdelen/PartsTable.tsx, src/app/(app)/onderdelen/[id]/page.tsx,
+docs/TASKS.md, docs/PROGRESS.md
+
+**Wat is gebouwd:**
+
+Voorraad aanpassen zonder het bewerkformulier te openen, met dezelfde knoppen op de
+detailpagina én op elke rij en elke kaart in `/onderdelen`. `StockStepper` is daarvoor
+één component met twee varianten: `compact` (alleen − en +, ±1) in de lijst en `full`
+op `/onderdelen/[id]`, waar er "Bijboeken" (bv. een levering van 10) en "Exact aantal
+instellen" (bv. na een telling) bij staan. Bij die laatste twee kiest de gebruiker een
+reden — levering, correctie of telling — die als `StockMutation.reason` (DELIVERY /
+CORRECTION / COUNT) wordt weggeschreven. Bij de −/+ knoppen is CORRECTION de impliciete
+reden; daar wordt niets gevraagd, want in de werkplaats moet één tik één tik blijven.
+
+*Optimistisch, met ongedaan maken.* De stand springt direct met React 19's
+`useOptimistic`. De reducer (`applyPendingStockChange` in `stock-state.ts`) telt elke
+nog niet bevestigde wijziging bij de vorige uitkomst op, dus twee tikken in de wachtrij
+zijn samen +2. Na afloop staat er een korte bevestiging ("Levering: 10 stuks
+bijgeboekt. Voorraad 38 → 48.") met een knop **Ongedaan maken**. Die schrijft een
+NIEUWE, tegengestelde, relatieve mutatie met reden CORRECTION en een toelichting die
+naar het id van de teruggedraaide regel verwijst; de oorspronkelijke regel blijft
+onaangeroerd staan. De tegenboeking is bewust relatief (`-delta`) en geen "zet terug op
+de oude stand": een verkoop die er tussendoor kwam zou daarmee stilletjes weggepoetst
+worden.
+
+*Mislukking is nooit stil.* `adjustStockAction` gooit niet maar geeft
+`{ ok: false, message }` terug. De optimistische wijziging verdwijnt dan vanzelf zodra
+de transitie klaar is — de stand springt dus terug naar de echte waarde — en de
+Nederlandse melding komt in een `role="alert"` bij de knoppen te staan (SPEC §F8). Een
+bevestiging verdwijnt na 12 seconden; een foutmelding blijft staan tot de volgende
+actie.
+
+*Ondergrens van 0 en de race.* `adjustStock()` in `src/lib/queries/stock.ts` gebruikt
+hetzelfde patroon als `registerSale()`: de voorwaarde staat in de WHERE van de update,
+niet alleen in een `if` ervoor. Relatief (−/+ en bijboeken):
+`UPDATE "Part" SET "stockQuantity" = "stockQuantity" + $delta WHERE id = $id AND
+"archivedAt" IS NULL AND "stockQuantity" >= $afname` (die laatste voorwaarde alleen bij
+een verlaging). Absoluut (exact instellen) kan niet relatief, dus daar is het een
+compare-and-set: de binnen de transactie gelezen stand gaat mee in de WHERE
+(`AND "stockQuantity" = $gelezenStand`). Raakt de update 0 rijen, dan gooit de functie
+`STOCK_CHANGED` en draait de hele transactie terug — geen halve mutatie. De
+voorraadwijziging en de `StockMutation`-regel zitten altijd in dezelfde
+`prisma.$transaction`, en `quantityBefore` wordt afgeleid uit de stand ná de update
+(het rijslot garandeert dat die van ons is), niet uit de lezing ervoor.
+
+*Dashboard.* Na elke geslaagde wijziging worden `/`, `/onderdelen`,
+`/onderdelen/[id]` en `/verkoop` gerevalideerd. Dat is ook wat de optimistische UI
+laat "landen": de verse serverwaarde komt met het antwoord van de action mee.
+
+**Keuzes en afwijkingen:**
+
+- *De redenkeuze is geen gecontroleerde radiogroep.* Bij T18 liep zo'n groep na een
+  validatiefout uit de pas met de verstuurde waarde. Hier staat, net als in `PartForm`,
+  één verborgen veld gevuld uit de React-state, met `type="button"`-knoppen en
+  `aria-pressed` ernaast. De panelen zijn een echt `<form action={clientFn}>`, dus wat
+  verzonden wordt komt letterlijk uit de DOM-velden die het scherm toont.
+- *De knoppen worden NIET uitgeschakeld terwijl een vorige wijziging onderweg is.* Dat
+  zou de tweede van twee snelle tikken opeten. Veilig is het omdat de database relatief
+  bijwerkt, niet "zet op de waarde die ik las".
+- *De kaart in `/onderdelen` is niet langer als geheel een link.* Er staan nu knoppen
+  in, en een knop binnen een link gedraagt zich op een telefoon onvoorspelbaar. De naam
+  bovenaan de kaart is de link geworden, met een raakvlak van 44px hoog.
+- *`StockAdjustmentResultDTO` en `StockAdjustmentErrorCode` staan in
+  `src/lib/queries/types.ts`*, niet in `queries/stock.ts`: die laatste importeert de
+  Prisma-runtime en mag een client component niet in (SPEC §3 regel 1).
+- *De pure UI-logica staat in `stock-state.ts`*, een bestand zonder `"use client"` en
+  zonder `"use server"`. Een `"use client"`-bestand mag alleen componenten en types
+  exporteren (zie de FIX-notitie van 2026-09-22), en een `"use server"`-bestand alleen
+  async functies.
+- *Ongedaan maken krijgt altijd reden CORRECTION*, ook bij het terugdraaien van een
+  levering: het terugdraaien van een levering is zelf geen levering.
+- *Een "exact instellen" op de stand die er al staat schrijft niets* en meldt dat ook
+  zo. `delta` mag niet 0 zijn (CHECK-constraint uit T17).
+
+**Bewust niet gedaan:**
+
+- Geen scherm met de mutatiegeschiedenis per onderdeel. Het grootboek wordt gevuld,
+  maar T19 vraagt daar geen weergave voor.
+- Geen vrije toelichting (`note`) in de UI bij bijboeken of instellen. Het veld bestaat
+  en wordt gevalideerd; de knoppen vullen zelf een beschrijvende tekst. Een invoerveld
+  voor een pakbonnummer stond niet in de acceptatiecriteria.
+- De bevestiging verdwijnt na 12 seconden. Daarna is "ongedaan maken" alleen nog via
+  een tegengestelde handmatige wijziging mogelijk. Zie "Openstaand".
+
+**Verificatie:**
+
+- `npx tsc --noEmit` → 0 fouten.
+- `npx vitest run` → 15 bestanden, **411 tests groen** (360 bestaande + 51 nieuwe: 36 in
+  `stock.test.ts`, 15 in `stock-ui.test.ts`). Geen bestaande assertie verzwakt.
+- `npx eslint .` → geen meldingen.
+- `npx next build` → "Compiled successfully", alle routes gegenereerd.
+- Rendertest met sessiecookie uit `createSessionValue()`: `/`, `/onderdelen`,
+  `/onderdelen/[id]`, `/verkoop`, `/leveranciers`, `/merken`, `/rapportages` → allemaal
+  200.
+- Echte databasetest via de server-actie op "Spiegel links" (ACC-BTC-028), waarbij na
+  elke stap de som van alle `delta`'s gelijk bleef aan `stockQuantity`:
+  38 → +1 = **39** (CORRECTION) → −1 = **38** (CORRECTION) → bijboeken 10 met reden
+  levering = **48** (DELIVERY, regel 38 → 48) → exact instellen op 30 met reden telling
+  = **30** (COUNT, delta −18). Som delta's telkens exact gelijk aan `stockQuantity`.
+- Ongedaan maken: na +1 (30 → 31) schreef de knop een nieuwe regel −1 (31 → 30) met
+  "Ongedaan gemaakt: correctie van +1 stuks (mutatie cmup6t9qj…)". De oorspronkelijke
+  regel staat er nog; het grootboek telde 11 regels en bleef sluitend.
+- Ondergrens van 0: op "Motorcontroller" (EBK-SSO-014, voorraad 0) eerst +1, daarna
+  twee − kliks in dezelfde tick. De eerste slaagde (1 → 0), de tweede werd server-side
+  geweigerd met "Er liggen maar 0 stuks van "Motorcontroller" op voorraad; je probeert
+  er 1 af te boeken. De voorraad kan niet onder 0." De UI sprong terug naar 0 en in het
+  grootboek staat géén regel voor de geweigerde poging: 7 regels, voorraad 0, som 0.
+- Twee keer snel tikken: twee kliks op **+** direct achter elkaar gaven meteen 32 op het
+  scherm en twee aparte grootboekregels (30 → 31 en 31 → 32). Drie snelle kliks op
+  "Stuurhoes scootmobiel" gaven 2 → 5 met drie regels.
+- Dashboard: "Onder minimumvoorraad" stond op 9, ging na het bijboeken van de Stuurhoes
+  (2 → 5) naar 8, en na één − (5 → 4) via een client-side navigatie meteen weer naar 9.
+- Mobiel (echte browser op 375×812): −, + en de submitknoppen zijn 48×48px, de
+  redenknoppen en "ongedaan maken" minimaal 44px hoog. − en + staan links en rechts van
+  de stand, met één duim te raken. Op de detailpagina staan "Bijboeken" en "Exact aantal
+  instellen" op een eigen regel onder de stepper. Geen horizontaal scrollen
+  (`scrollWidth` 375 = `clientWidth`). Bij lage voorraad is de stand amber.
+
+**Openstaand / risico's:**
+
+- De bevestiging met "Ongedaan maken" verdwijnt na 12 seconden. Dat houdt het overzicht
+  met tientallen rijen leesbaar, maar wie afgeleid wordt is het venster kwijt. Als dat
+  in de werkplaats hindert: langer maken of alleen in de lijst laten verdwijnen.
+- In de brede tabel op `/onderdelen` is de kolom Voorraad ~170px breed geworden. De
+  tabel scrollt daardoor eerder horizontaal op een smalle laptop. Dat is alleen de
+  tabel (die onder `md` verborgen is), niet de pagina.
+- Tijdens het testen bleef de dev-server een paar keer in de `loading.tsx`-fallback
+  hangen in de browser, ook op pagina's die deze taak niet raakt (`/rapportages`). Na
+  een herstart van `next dev` en een cache-busting URL was het weg; `curl` leverde de
+  volledige pagina altijd binnen 250ms. Lijkt een dev-/HMR-artefact, geen applicatiebug,
+  maar het is het vermelden waard.
+- De lokale database bevat nu de testmutaties van hierboven (Spiegel links staat op 33
+  in plaats van 38, Stuurhoes op 4, Motorcontroller op 0). Het grootboek is overal
+  sluitend.
+
+---
+
 ## [T18] Prijzen inclusief btw tonen en invoeren — 2026-10-01
 **Status:** klaar voor review
 

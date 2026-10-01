@@ -11,8 +11,10 @@
  * in exact dezelfde vorm. De marge blijft op excl.-basis en staat als zodanig
  * gelabeld, met de toelichting uit `MARGIN_BASIS_NOTE` erbij.
  *
- * Geen "use client": er is geen interactiviteit nodig (sorteren/filteren loopt
- * via URL-navigatie in `PartsFilters`), dus dit blijft een Server Component.
+ * Geen "use client": sorteren en filteren lopen via URL-navigatie in `PartsFilters`,
+ * dus dit blijft een Server Component. De enige interactiviteit is de
+ * `StockStepper` (T19) op elke rij en elke kaart — een eigen client component, zodat
+ * de rest van het overzicht niet naar de browser gebundeld hoeft te worden.
  */
 
 import Link from "next/link";
@@ -30,6 +32,8 @@ import {
 import { getCategoryLabel } from "@/lib/labels";
 import { formatEuro } from "@/lib/money";
 import type { PartDTO } from "@/lib/queries/types";
+
+import { StockStepper } from "./StockStepper";
 
 const UNBRANDED_GROUP_KEY = "__unbranded__";
 const UNBRANDED_GROUP_LABEL = "Universeel (geen merk)";
@@ -159,8 +163,15 @@ export function PartsTable({ items, groupByBrand }: PartsTableProps) {
                     </span>
                   </TableCell>
                   <TableCell>
-                    <div className="flex items-center gap-2">
-                      {part.stockQuantity}
+                    {/* Dezelfde −/+ knoppen als op de detailpagina (T19), zodat die
+                        pagina niet nodig is om een stuk bij of af te boeken. */}
+                    <div className="flex flex-col gap-1">
+                      <StockStepper
+                        partId={part.id}
+                        partName={part.name}
+                        stockQuantity={part.stockQuantity}
+                        minStock={part.minStock}
+                      />
                       {part.isLowStock && <Badge variant="warning">Laag</Badge>}
                     </div>
                   </TableCell>
@@ -174,20 +185,30 @@ export function PartsTable({ items, groupByBrand }: PartsTableProps) {
           {/* Mobiel: kaartweergave in plaats van een brede tabel (SPEC §F8). */}
           <div className="grid gap-3 md:hidden">
             {group.items.map((part) => (
-              <Link key={part.id} href={`/onderdelen/${part.id}`} className="block">
+              /* De kaart is NIET meer als geheel een link: sinds T19 staan er
+                 −/+ knoppen in, en een knop binnen een link levert op een telefoon
+                 onvoorspelbaar gedrag op (de tik activeert dan beide). De naam
+                 bovenaan is de link naar de detailpagina en heeft zelf een raakvlak
+                 van 44px hoog. */
+              <div key={part.id}>
                 <Card
                   className={
                     part.isLowStock ? "border-amber-300 bg-amber-50/60" : undefined
                   }
                 >
                   <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <p className="font-medium text-gray-900">{part.name}</p>
+                    <Link
+                      href={`/onderdelen/${part.id}`}
+                      className="flex min-h-[44px] flex-col justify-center"
+                    >
+                      <p className="font-medium text-blue-700 underline-offset-2 hover:underline">
+                        {part.name}
+                      </p>
                       <p className="text-sm text-gray-500">
                         {part.brand ? part.brand.name : "Universeel"} ·{" "}
                         {getCategoryLabel(part.category)}
                       </p>
-                    </div>
+                    </Link>
                     {part.isLowStock && <Badge variant="warning">Lage voorraad</Badge>}
                   </div>
 
@@ -196,10 +217,17 @@ export function PartsTable({ items, groupByBrand }: PartsTableProps) {
                       <dt className="text-gray-500">SKU</dt>
                       <dd className="text-gray-900">{part.sku}</dd>
                     </div>
-                    <div>
-                      <dt className="text-gray-500">Voorraad</dt>
-                      <dd className="text-gray-900">
-                        {part.stockQuantity} (min. {part.minStock})
+                    <div className="col-span-2">
+                      <dt className="text-gray-500">
+                        Voorraad (min. {part.minStock})
+                      </dt>
+                      <dd className="mt-1">
+                        <StockStepper
+                          partId={part.id}
+                          partName={part.name}
+                          stockQuantity={part.stockQuantity}
+                          minStock={part.minStock}
+                        />
                       </dd>
                     </div>
                     {/* Inkoop en verkoop in dezelfde vorm als in de tabel: incl. btw
@@ -236,7 +264,7 @@ export function PartsTable({ items, groupByBrand }: PartsTableProps) {
                     </div>
                   </dl>
                 </Card>
-              </Link>
+              </div>
             ))}
           </div>
         </section>

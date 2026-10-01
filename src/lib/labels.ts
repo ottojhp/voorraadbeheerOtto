@@ -42,6 +42,47 @@ export function getCategoryLabel(category: Category): string {
   return CATEGORY_LABELS[category];
 }
 
+/**
+ * Redenen uit de `StockMutationReason`-enum (`prisma/schema.prisma`). Ook hier als
+ * string-union in plaats van een import uit `@prisma/client`, zodat de labels in een
+ * client component gebruikt kunnen worden (T19: de snelle voorraadknoppen).
+ */
+export type StockMutationReason =
+  | "DELIVERY"
+  | "CORRECTION"
+  | "COUNT"
+  | "SALE"
+  | "WORKSHOP"
+  | "INITIAL";
+
+export const STOCK_MUTATION_REASON_LABELS: Record<StockMutationReason, string> = {
+  DELIVERY: "Levering",
+  CORRECTION: "Correctie",
+  COUNT: "Telling",
+  SALE: "Verkoop",
+  WORKSHOP: "Werkplaatsverbruik",
+  INITIAL: "Beginvoorraad",
+};
+
+/**
+ * De redenen die de gebruiker zélf mag kiezen bij een handmatige voorraadwijziging
+ * (T19). `SALE` en `WORKSHOP` horen bij een verkoopregel en `INITIAL` bij het
+ * aanleggen van een onderdeel; die zijn hier bewust niet kiesbaar, want dan zou het
+ * grootboek een verkoop kunnen suggereren die nooit heeft plaatsgevonden.
+ */
+export type ManualStockReason = "DELIVERY" | "CORRECTION" | "COUNT";
+
+/** Vaste weergavevolgorde van de kiesbare redenen: levering, correctie, telling. */
+export const MANUAL_STOCK_REASON_OPTIONS: ManualStockReason[] = [
+  "DELIVERY",
+  "CORRECTION",
+  "COUNT",
+];
+
+export function getStockMutationReasonLabel(reason: StockMutationReason): string {
+  return STOCK_MUTATION_REASON_LABELS[reason];
+}
+
 export type SaleChannel = "COUNTER" | "WORKSHOP";
 
 export const SALE_CHANNEL_LABELS: Record<SaleChannel, string> = {

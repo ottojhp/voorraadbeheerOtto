@@ -15,7 +15,7 @@
  * ~21%. Marge en margepercentage staan altijd op excl.-basis.
  */
 
-import type { Category } from "@/lib/labels";
+import type { Category, ManualStockReason } from "@/lib/labels";
 
 /** Merk of leverancier, gereduceerd tot wat een overzicht of dropdown nodig heeft. */
 export interface NamedRefDTO {
@@ -95,6 +95,49 @@ export interface PartSaleOptionDTO {
   vatRate: number;
   /** Afgeleid uit `salePriceIncl`; het excl.-bedrag achter de kassaprijs. */
   salePriceExcl: number;
+}
+
+// ---------------------------------------------------------------------------
+// Voorraadmutaties (T19)
+// ---------------------------------------------------------------------------
+
+/**
+ * Onderscheidbare foutgevallen bij het aanpassen van de voorraad. Staat hier en niet
+ * in `./stock` omdat de client component die de melding toont erop moet kunnen
+ * sturen, en `./stock` de Prisma-runtime importeert.
+ */
+export type StockAdjustmentErrorCode =
+  | "INVALID_INPUT"
+  | "PART_NOT_FOUND"
+  | "PART_ARCHIVED"
+  | "INSUFFICIENT_STOCK"
+  | "STOCK_CHANGED";
+
+/**
+ * Resultaat van een geslaagde voorraadwijziging (`adjustStock()` in `./stock`):
+ * alles wat de UI nodig heeft om de bevestiging te tonen en de wijziging weer
+ * ongedaan te kunnen maken.
+ */
+export interface StockAdjustmentResultDTO {
+  partId: string;
+  partName: string;
+  /**
+   * `false` als er niets te wijzigen was: "exact aantal instellen" op de stand die er
+   * al stond. Er is dan ook GEEN grootboekregel geschreven (`delta` mag niet 0 zijn)
+   * en `mutationId` is `null`.
+   */
+  changed: boolean;
+  /** Het werkelijk geboekte verschil; `0` als `changed` `false` is. */
+  delta: number;
+  quantityBefore: number;
+  quantityAfter: number;
+  minStock: number;
+  /** Afgeleid uit de NIEUWE stand (SPEC §F1), zodat de UI de badge kan bijwerken. */
+  isLowStock: boolean;
+  /** De reden zoals weggeschreven; `null` als er niets geschreven is. */
+  reason: ManualStockReason | null;
+  /** Id van de geschreven grootboekregel; `null` als er niets geschreven is. */
+  mutationId: string | null;
 }
 
 /** Generiek pagineringsresultaat. */
