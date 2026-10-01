@@ -520,7 +520,7 @@ Elke wijziging schrijft een regel in `StockMutation`.
 ---
 
 ## T20 — Artikelnummer scannen met tekstherkenning (OCR)
-**Status:** todo
+**Status:** review
 **Afhankelijk van:** T17, T19
 
 **Beschrijving**
@@ -874,3 +874,31 @@ Ze worden niet tussendoor gebouwd.
   op een smalle laptop eerder horizontaal scrollt. Op 375px speelt het niet (daar staat
   de kaartweergave). Als het hindert: in de tabel een compactere variant (bv. 44px en
   minder tussenruimte) of de knoppen pas tonen bij hover/focus.
+
+- (2026-10-01, bouwsessie T20) **`supplierArticleNumber` zit niet in het zoekveld van
+  `/onderdelen`.** Het scanscherm matcht erop (dat vraagt T20), maar wie het nummer in
+  het gewone zoekveld typt vindt niets: `buildPartWhere()` zoekt op naam, sku, barcode
+  en pasvorm. Dat is precies het nummer dat op de verpakking staat, dus aan de balie is
+  dat verwarrend. Eén regel in de `OR` van `buildPartWhere` lost het op, maar dat
+  wijzigt het gedrag van T07 en stond niet in T20. De terugval in het scanscherm werkt
+  wel: "opnieuw opzoeken" na handmatig verbeteren zoekt over alle drie de velden.
+
+- (2026-10-01, bouwsessie T20) **De tekstherkenning haalt megabytes van een CDN.**
+  tesseract.js laadt zijn worker, de WebAssembly-kern en het Engelse taalmodel bij het
+  eerste gebruik van `cdn.jsdelivr.net` (het taalmodel alleen al 5 MB gecomprimeerd).
+  In een werkplaats met slechte of geen wifi werkt OCR daardoor niet; de barcodescanner
+  en het handmatig zoeken wél. Zelf hosten in `public/` kan, maar zet een paar megabyte
+  build-artefacten in de repo — dat is een beslissing voor de projectmanager, niet iets
+  wat binnen T20 paste.
+
+- (2026-10-01, bouwsessie T20) **De herkenningskwaliteit is alleen op GEGENEREERDE
+  afbeeldingen gemeten, niet op echte verpakkingen.** Schone, rechte tekst wordt goed
+  gelezen; een beeld dat 10 graden gedraaid stond werd onleesbaar (`Art.nr- PlA-4T.g
+  455`). Vóór oplevering zou de eigenaar twintig echte pakjes onder werkplaatsverlichting
+  moeten scannen; pas dan is er iets zinnigs te zeggen over hoe vaak dit in de praktijk
+  werkt. Zie de tabel in de PROGRESS-notitie van T20.
+
+- (2026-10-01, bouwsessie T20) **`eng.traineddata` staat niet in `.gitignore`.**
+  tesseract.js in Node (alleen gebruikt tijdens het testen; de app draait in de browser)
+  legt dat bestand van 5 MB in de projectroot. Eén regel in `.gitignore` voorkomt dat
+  het ooit per ongeluk gecommit wordt.

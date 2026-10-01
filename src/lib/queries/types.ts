@@ -140,6 +140,64 @@ export interface StockAdjustmentResultDTO {
   mutationId: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// Scannen (T20)
+// ---------------------------------------------------------------------------
+
+/**
+ * Eén onderdeel zoals het scanscherm het toont bij "is dit het onderdeel?".
+ *
+ * Bewust een eigen, kleine DTO en niet `PartDTO`: de gebruiker moet op een
+ * telefoonscherm in één blik kunnen beslissen of dit het pakje in zijn hand is, en
+ * daar heeft hij naam, merk, de drie nummers, de locatie in de schappen en de
+ * huidige voorraad voor nodig — geen marge en geen inkoopprijs. `minStock` zit erbij
+ * omdat de voorraadknoppen uit T19 die nodig hebben.
+ *
+ * `supplierArticleNumber` staat hier voor het eerst in een DTO (het veld bestaat
+ * sinds T17 alleen in het schema en de seed): het is het nummer dat op de verpakking
+ * staat en dus precies waar deze taak op matcht.
+ */
+export interface PartScanDTO {
+  id: string;
+  name: string;
+  brandName: string | null;
+  category: Category;
+  sku: string;
+  barcode: string | null;
+  /** Het nummer dat de leverancier of fabrikant op de verpakking drukt (T17). */
+  supplierArticleNumber: string | null;
+  /** Plek in de schappen; aan de balie het snelste houvast na een treffer. */
+  location: string | null;
+  stockQuantity: number;
+  minStock: number;
+  isLowStock: boolean;
+  /** INCL. btw — zoals opgeslagen (SPEC §3 regel 0). */
+  salePriceIncl: number;
+  vatRate: number;
+  /** Afgeleid uit `salePriceIncl`. */
+  salePriceExcl: number;
+  /** ISO-string, of `null`. Gearchiveerde onderdelen mogen niet gewijzigd worden. */
+  archivedAt: string | null;
+}
+
+/** Waar de gescande tekst vandaan kwam. Bepaalt hoe hard het bewijs is. */
+export type ScanSource = "barcode" | "ocr" | "manual";
+
+/**
+ * Eén kandidaat uit een scan: het onderdeel plus de verantwoording waarom het
+ * gevonden is. Die verantwoording staat in de UI, zodat de gebruiker weet of hij
+ * naar een exacte barcodetreffer of naar een gokje van de tekstherkenning kijkt.
+ */
+export interface PartScanMatchDTO {
+  part: PartScanDTO;
+  /** Op welk veld de treffer zat. */
+  field: "barcode" | "sku" | "supplierArticleNumber";
+  /** De opgeslagen waarde die matchte (niet wat de camera meende te lezen). */
+  value: string;
+  /** `exact` | `normalized` | `contained` — zie `@/lib/article-number`. */
+  kind: "exact" | "normalized" | "contained";
+}
+
 /** Generiek pagineringsresultaat. */
 export interface PaginatedResult<T> {
   items: T[];

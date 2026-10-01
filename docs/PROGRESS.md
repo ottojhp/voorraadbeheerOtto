@@ -6,6 +6,273 @@ in `docs/TASKS.md`.
 
 Nieuwste notitie bovenaan.
 
+## [T20] Artikelnummer scannen met tekstherkenning — 2026-10-01
+**Status:** klaar voor review
+
+**Aangemaakte bestanden:** src/lib/article-number.ts, src/lib/ocr-engine.ts,
+src/lib/nav.ts, src/lib/validation/scan.ts, src/components/TextScanner.tsx,
+src/app/(app)/onderdelen/scannen/page.tsx,
+src/app/(app)/onderdelen/scannen/ScanScreen.tsx,
+src/app/(app)/onderdelen/scan-actions.ts, src/app/(app)/onderdelen/scan-state.ts,
+src/lib/__tests__/article-number.test.ts, src/lib/__tests__/ocr-engine.test.ts,
+src/lib/__tests__/scan-ui.test.ts, src/lib/__tests__/nav.test.ts
+
+**Gewijzigde bestanden:** src/components/BarcodeScanner.tsx, src/components/AppNav.tsx,
+src/components/icons.tsx, src/app/(app)/onderdelen/page.tsx,
+src/app/(app)/onderdelen/StockStepper.tsx, src/lib/queries/parts.ts,
+src/lib/queries/types.ts, package.json, package-lock.json, docs/TASKS.md,
+docs/PROGRESS.md
+
+**Toegevoegde dependency:** `tesseract.js@5.1.1` (exact, `--ignore-scripts`). Verder
+niets.
+
+**Wat is gebouwd:**
+
+Een scanscherm op de eigen route `/onderdelen/scannen`, bereikbaar via een
+**Scan**-knop bovenaan `/onderdelen` en via een **Scan**-item in de navigatie (zijbalk
+én mobiele onderbalk). Een eigen route en geen overlay: zo kan de navigatieknop een
+gewone link zijn, is de pagina deelbaar en met de terugknop te verlaten, en zit het
+zware werk in een aparte clientbundle die alleen geladen wordt als iemand echt gaat
+scannen — `/onderdelen` bleef daardoor op 112 kB First Load JS staan.
+
+*Vijf stappen.* Uitleg + "Camera openen" → scannen → opzoeken → bevestigen →
+voorraad aanpassen. Het veld "nummer zelf invoeren" staat in **elke** stap op het
+scherm: de camera is een snelkoppeling, geen voorwaarde. Na een gelezen code gaat de
+camera uit; bevestigen boven een bewegend beeld is vragen om een misklik en een open
+camera kost batterij.
+
+*De bestaande barcodescanner is hergebruikt, niet nagebouwd.* `TextScanner` rendert
+`BarcodeScanner` uit T10 en leest mee in dezelfde camerastream. Daarvoor zijn drie
+additieve props aan `BarcodeScanner` gekomen: `onVideoReady` (het `<video>`-element
+zodra het beeld loopt, en `null` zodra de camera stopt), `hint` (de tekst onder het
+richtkader) en `footer` (een "Nu lezen"-knop). Wie die props niet meegeeft, krijgt
+exact het gedrag van T10. Een tweede `getUserMedia` zou een tweede stream openen — op
+een telefoon lukt dat vaak niet, en als het lukt kost het dubbel zoveel batterij.
+
+*Barcode heeft voorrang, in drie lagen.* De barcodedetectie loopt vanaf het eerste
+frame; de tekstherkenning begint pas na 1200 ms, zodat een barcode die gewoon in beeld
+ligt dan al gevonden is. Zodra er een barcode gelezen is gaat de OCR-lus uit. En een
+OCR-resultaat dat binnenkomt nádat er een barcode was, wordt weggegooid — één
+OCR-ronde duurt op een telefoon een seconde of langer, dus de barcode kan er middenin
+vallen. Bij een barcode wordt bovendien strenger gematcht (`exactOnly`): een complete
+code hoort exact of na normalisatie te matchen, nooit "zit ergens in".
+
+*Tekstherkenning, dynamisch geladen.* `createOcrEngine()` gebruikt de ingebouwde
+`TextDetector` waar die bestaat (gratis en meteen klaar) en valt anders terug op
+Tesseract via `await import("tesseract.js")`. De uitsnede die naar de herkenning gaat
+is een brede, lage strook in het midden (86% × 30%), ongeveer waar het richtkader
+staat, en wordt tot 2× opgeschaald — minder ruis van de rest van de verpakking en
+minder pixels om te verwerken. Elke Engelse statusmelding van Tesseract wordt vertaald,
+met een percentage, want die eerste keer duurt merkbaar lang.
+
+*Nooit automatisch wijzigen.* Het scherm toont de kandidaat of kandidaten met de
+verantwoording erbij — op welk veld de treffer zat (barcode / artikelcode /
+leveranciersnummer) en hoe hard hij is (exact, na verbeteren van verwisselbare tekens,
+of "het nummer komt voor in de gelezen tekst"). Bij alles behalve een exacte treffer
+staat er expliciet "controleer de verpakking voordat je bevestigt". Pas na de knop
+"Dit is het onderdeel" wordt de voorraadstand VERS opgehaald en verschijnt de
+`StockStepper` uit T19 in de variant `full` (−, +, bijboeken, exact aantal instellen).
+
+*Geen match.* De gelezen tekst staat altijd op het scherm — ook bíj een treffer, zodat
+je zelf ziet of de camera iets anders las dan er staat. Zonder treffer staat die tekst
+in het invoerveld en kun je hem verbeteren en opnieuw opzoeken (dat zoekt weer over
+alle drie de velden mét normalisatie), of hem als zoekopdracht naar `/onderdelen`
+sturen.
+
+**De normalisatie (`src/lib/article-number.ts`, puur en getest):**
+
+Hoofdletters; alles wat geen letter of cijfer is valt weg (spatie, streepje, punt,
+slash); en `O→0`, `I→1`, `L→1`, `S→5`, `B→8`, `Z→2`. Wat er NIET gebeurt en wat de
+valse treffers beperkt: er verdwijnt nooit een teken uit het nummer zelf, de lengte
+blijft gelijk (nummers van verschillende lengte matchen dus nooit), voorloopnullen
+blijven staan, en er is geen fuzzy afstand — alleen exacte gelijkheid van sleutels, of
+als laatste redmiddel het letterlijk voorkomen van een sleutel van ≥ 6 tekens in de
+gelezen regel, en dat alleen als er verder niets gevonden is.
+
+De keerzijde staat in de tests vastgelegd: `ROF-RO9-L` en `ROF-RO9-1` krijgen dezelfde
+sleutel. Dat is geen bug maar de directe consequentie van het criterium "behandel
+I/1/l als gelijk" — na `toUpperCase()` is een kleine `l` niet van een `L` te
+onderscheiden. Een leverancier die `-L` (large) naast `-1` gebruikt, krijgt daar twee
+kandidaten in plaats van één.
+
+Tegen de echte lokale database gecontroleerd: 40 actieve onderdelen leveren **111
+genormaliseerde sleutels** op (sku, barcode en leveranciersnummer samen) en **0
+sleutels wijzen naar meer dan één onderdeel**. In deze dataset kost de normalisatie dus
+geen enkele valse treffer.
+
+**Wat er van de herkenning écht gemeten is — en wat niet:**
+
+Wat wél gemeten is, met **gegenereerde afbeeldingen** (PDF met Helvetica → PNG via
+`sips`), door Tesseract 5.1.1 in Node, met dezelfde instellingen als het scanscherm:
+
+| beeld | gelezen | resultaat |
+|---|---|---|
+| groot en scherp, 1400px | `PIAGGIO ORIGINAL / Art.nr: PIA-4T-8455 / EAN 8712345000026` | exacte treffer, 185 ms, zekerheid 92 |
+| volle verpakkingstekst, 640px | idem + merk, omschrijving, "Made in Italy" | exacte treffer, 142 ms, zekerheid 87 |
+| één nummer, 900px | `NGK-CR7HSA` | exacte treffer, 36 ms, zekerheid 92 |
+| onscherp (240px → 900px opgeblazen) | `NZ-TYR-10080-16` | exacte treffer, 46 ms, zekerheid 88 |
+| **10 graden gedraaid** | `Art.nr- PlA-4T.g 455` | **geen treffer**, zekerheid 51 |
+
+Die laatste regel is de belangrijkste. Een paar graden scheefstand breekt de herkenning
+volledig, en in de werkplaats houdt niemand zijn telefoon recht boven een pakje.
+`rotateAuto: true` helpt daar meetbaar tegen, maar op een eigenaardige manier: vier
+rondes op hetzelfde gedraaide beeld gaven zonder de vlag 4× zekerheid 51 en geen
+treffer, en mét de vlag ronde 1 en 3 hetzelfde maar ronde 2 en 4 `Art.nr: PIA-4T-8455`
+met zekerheid 93 en een exacte treffer. Tesseract past namelijk de rotatie toe die hij
+in de VORIGE ronde mat. Eén losse ronde heeft er dus niets aan; de leeslus doet er
+meerdere op dezelfde scène en daar maakt het het verschil tussen "nooit leesbaar" en
+"om de ronde leesbaar". Kosten: ~80 → ~240 ms per ronde, op een Mac.
+
+**Wat NIET gemeten is, en wat de eigenaar moet weten:**
+
+- Er is **geen enkele echte verpakking** gelezen. Gegenereerde Helvetica op wit is het
+  makkelijkste dat er bestaat; een glimmende folieverpakking onder tl-licht, een
+  gekreukt zakje, witte druk op zwart, een dot-matrix-sticker of een gebogen fles zijn
+  een heel ander probleem. **Verwacht geen vergelijkbare resultaten.**
+- Er zijn **geen percentages** te geven. Alles wat hierboven staat zijn vijf
+  afbeeldingen, geen steekproef.
+- Er is **niet op een telefoon** gemeten. De tijden komen van een Mac; de WebAssembly
+  op een telefoon is aantoonbaar trager, hoeveel precies is onbekend.
+- Het `TextDetector`-pad is **nooit uitgevoerd**: de browser hier heeft die API niet.
+  De code is geschreven en typt, maar is niet in werking gezien.
+- De **camera zelf** is niet getest: er was geen camera beschikbaar. Wat wél getest is,
+  is de foutafhandeling (zie Verificatie).
+- Het **gecombineerde pad** (camera → frame → canvas → Tesseract → match) is niet als
+  geheel gedraaid. De schakels zijn apart getest: canvas-uitsnede met eenheidstests,
+  Tesseract met afbeeldingen, matchen met de echte database.
+
+Kortom: de keten werkt aantoonbaar, de barcodescanner blijft het betrouwbare pad, en
+tekstherkenning is een gok die de gebruiker altijd zelf moet bevestigen. Het scherm
+zegt dat ook met zoveel woorden.
+
+**Keuzes en afwijkingen:**
+
+- *Het matchen gebeurt in TypeScript, niet in SQL.* De normalisatie zou in SQL een
+  stapel geneste `REPLACE(UPPER(...))` per kolom worden: elke index onbruikbaar, en de
+  regels op twee plekken (TypeScript voor de tests, SQL voor de query) die
+  onvermijdelijk uit elkaar gaan lopen. `findPartsByScannedText()` leest daarom de
+  nummers van alle actieve onderdelen (twaalf kleine kolommen) en laat de pure functie
+  het werk doen. Voor één winkel verwaarloosbaar; bij tienduizenden rijen is de
+  volgende stap een opgeslagen genormaliseerde zoekkolom met index.
+- *`StockStepper` heeft een optionele `onAdjusted`-callback gekregen.* Nodig omdat het
+  scanscherm geen server component is: `revalidatePath` ververst `/onderdelen` en
+  `/onderdelen/[id]`, maar niet de client-state van dit scherm. Zonder die callback
+  springt de stand na het bijboeken terug naar de waarde van vóór de scan. Weglaten
+  verandert niets aan het bestaande gedrag; de callback wordt binnen dezelfde transitie
+  aangeroepen, zodat de nieuwe waarde landt in de render waarin de optimistische
+  wijziging vervalt.
+- *De actieve-link-logica is verhuisd naar `src/lib/nav.ts`.* Met zes items waarvan er
+  twee onder `/onderdelen` vallen, zou de oude `startsWith`-regel op
+  `/onderdelen/scannen` twee links tegelijk laten oplichten — twee keer
+  `aria-current="page"` betekent voor een schermlezer twee huidige pagina's. Nu wint de
+  langste passende href. `AppNav.tsx` is `"use client"` en mag alleen componenten en
+  types exporteren, dus de functie staat in een eigen bestand (en is zo ook getest).
+- *De mobiele onderbalk heeft zes items en kortere labels.* Op 375px is elk vakje nog
+  ~62px; "Leveranciers" en "Rapportages" zijn daar `Levers.` en `Rapport.` geworden,
+  met de volledige naam in een `sr-only`-span ernaast. Op desktop staat het volledige
+  label.
+- *Geen `tessedit_char_whitelist`.* Die wordt door de LSTM-engine grotendeels genegeerd
+  en wat er wél mee gebeurt verschilt per versie. De letter/cijfer-verwisselingen
+  worden daarom in de genormaliseerde match opgevangen, waar ze getest zijn.
+- *`PartScanDTO` is een eigen, kleine DTO* en niet `PartDTO`: op een telefoon moet je
+  in één blik kunnen beslissen of dit het pakje in je hand is, en daar hoort geen marge
+  of inkoopprijs bij. Dit is wel de eerste DTO waarin `supplierArticleNumber` zit; dat
+  veld bestond sinds T17 alleen in schema en seed.
+- *Tesseract haalt zijn zware onderdelen van een CDN.* De dynamische import houdt het
+  JavaScript van tesseract.js (15,9 kB in een eigen chunk) uit de hoofdbundle, maar het
+  worker-script, de WebAssembly-kern en het Engelse taalmodel zitten sowieso nooit in
+  een bundle: tesseract.js haalt die bij het eerste gebruik van `cdn.jsdelivr.net`.
+  Samen enkele megabytes (het taalmodel alleen al 5 MB gecomprimeerd). Gevolg: **zonder
+  internet werkt de tekstherkenning niet.** De barcodescanner en het handmatig zoeken
+  wél. De browser cachet het model, dus de tweede keer is het snel.
+
+**Bewust niet gedaan:**
+
+- `supplierArticleNumber` is NIET toegevoegd aan het zoekveld van `/onderdelen`. Dat
+  staat niet in T20 en zou het gedrag van T07 wijzigen. Het scanscherm zoekt er wél op,
+  ook na handmatig verbeteren. Staat als observatie in TASKS.md.
+- Geen Nederlands taalmodel geladen. Artikelnummers zijn geen woorden; `eng` volstaat
+  en scheelt een tweede download van megabytes.
+- Geen eigen hosting van de Tesseract-bestanden in `public/`. Dat zou megabytes aan
+  build-artefacten in de repo zetten en stond niet in de criteria. Zie "Openstaand".
+- Geen scanknop op `/verkoop` toegevoegd; die heeft al zijn eigen barcodescanner uit
+  T12 en T20 vraagt er niet om.
+
+**Verificatie:**
+
+- `npx tsc --noEmit` → 0 fouten.
+- `npx vitest run` → 19 bestanden, **459 tests groen** (411 bestaande + 48 nieuwe: 30 in
+  `article-number.test.ts`, 8 in `ocr-engine.test.ts`, 6 in `nav.test.ts`, 4 in
+  `scan-ui.test.ts`). Geen bestaande assertie verzwakt of aangepast.
+- `npx eslint .` → geen meldingen.
+- `npx next build` (rechtstreeks, dev-server eerst gestopt) → "Compiled successfully".
+  **Bundelgrootte `/onderdelen`: 112 kB First Load JS vóór én na** (routegrootte 2,47 kB
+  → 2,97 kB door de scanknop en het navigatie-item). Gedeelde bundle 103 kB, onveranderd.
+  Nieuwe route `/onderdelen/scannen`: 5,63 kB / **119 kB** First Load JS. Tesseract zit
+  in een aparte chunk (`597.*.js`, 15,9 kB) die NIET in het app-build-manifest van de
+  scanpagina staat — hij wordt dus pas opgehaald bij de dynamische import. In de
+  browser is dat bevestigd: na het openen van het scanscherm met een geweigerde camera
+  stond er geen enkel verzoek naar `jsdelivr` in het netwerkoverzicht.
+- `npm audit --omit=dev` → 2 kwetsbaarheden (1 moderate, 1 high), beide de **al
+  bestaande** `postcss <= 8.5.22` die binnen `next` 15.5.27 meekomt (sourceMappingURL /
+  stringify-XSS). De enige aangeboden oplossing is `next@16.3.8`, een breaking change.
+  **tesseract.js voegt geen enkele kwetsbaarheid toe.**
+- Rendertest met sessiecookie uit `createSessionValue()`: `/`, `/onderdelen`,
+  `/onderdelen/[id]`, `/onderdelen/scannen`, `/verkoop`, `/leveranciers`, `/merken`,
+  `/rapportages` → allemaal **200**.
+- **Echte data uit de lokale database.** Twaalf bestaande `supplierArticleNumber`-waarden
+  verminkt zoals OCR dat doet (0→O, 1→I, 5→S, streepjes → spaties, alles kleine letters)
+  en door `findPartsByScannedText()` gehaald: **12/12 vonden precies het juiste
+  onderdeel**, telkens als enige kandidaat. Voorbeelden:
+  `NZ-TYR-12070-12` → `nz tyr i2o7o i2` → Achterband 120/70-12;
+  `HW-CHK-125-300` → `hw chk i2s 3oo` → Kettingset;
+  `KNP-MM-250W` → `knp mm 2sow` → Middenmotor 250W;
+  `VD-OIL-1040-1L` → `vd oil io4o il` → Motorolie 10W-40;
+  `PIA-4T-8455` → `pia 4t 84ss` → Remblokkenset achterzijde;
+  `BTC-MIR-L-08` → `btc mir l o8` → Spiegel links.
+  Een OCR-lap met ruis eromheen (`PIAGGIO ORIGINAL PARTS / niu bat i2l o4 / MADE IN
+  ITALY / GARANTIE 2 JAAR`) gaf één treffer: Accupack 12V lithium. Niet-bestaande
+  nummers (`XX-NOPE-99999`, `PIA-4T-9999`, `8712345999999`) gaven **geen** treffer.
+- **Browser op 375×812.** `/onderdelen`: de knop **Scan** staat links van "Nieuw
+  onderdeel" bovenaan. De onderbalk toont zes items — Dashboard, Voorraad, Scan,
+  Verkoop, Levers., Rapport. — alle labels volledig leesbaar, en
+  `scrollWidth == clientWidth == 375`, dus geen horizontaal scrollen. Op
+  `/onderdelen/scannen` licht alleen "Scan" op, niet ook "Voorraad".
+- **Handmatige flow in de browser:** `pia 4t 84ss` ingetypt → "Eén onderdeel gevonden",
+  bron "zelf ingevoerd", de gelezen tekst zichtbaar, en de kaart "Remblokkenset
+  achterzijde — leveranciersnummer PIA-4T-8455 — treffer na verbeteren van
+  verwisselbare tekens" met de amberkleurige waarschuwing om de verpakking te
+  controleren. Na "Dit is het onderdeel" verscheen de T19-stepper op stand 18; **+**
+  gaf 19 met de bevestiging "Correctie: 1 stuk bijgeboekt. Voorraad 18 → 19." en de
+  stand sprong daarna NIET terug (dat is wat `onAdjusted` repareert). "Ongedaan maken"
+  bracht hem weer op 18. `ZZ-GEENIDEE-404` gaf "Geen onderdeel gevonden" met de tekst
+  in het correctieveld en de knoppen "Opnieuw scannen" en "Zoeken in voorraad".
+- **Camerafout.** "Camera openen" in een browser zonder cameratoestemming gaf het
+  scanscherm met de melding *"Toegang tot de camera is geweigerd. Sta de camera toe in
+  de browserinstellingen en probeer opnieuw, of voer de code handmatig in."*, de
+  knoppen "Opnieuw proberen" en "Sluiten", en onderaan "Camera niet beschikbaar". Na
+  sluiten: 0 `<video>`-elementen en 0 dialogen in de DOM, het handmatige invoerveld
+  nog gevuld, en nog steeds geen horizontaal scrollen. De paden "geen https" en "geen
+  camera-API" komen uit dezelfde, al in T10 geteste `classifyCameraError`; die twee
+  zijn hier niet opnieuw uitgelokt.
+
+**Openstaand / voor de projectmanager:**
+
+- **Tesseract hangt aan een CDN.** Een werkplaats met slechte wifi of zonder internet
+  heeft geen tekstherkenning. Wie dat niet wil, moet `worker.min.js`, de
+  `tesseract.js-core`-bestanden en `eng.traineddata.gz` in `public/` zetten en
+  `workerPath` / `corePath` / `langPath` meegeven. Dat is een paar megabyte in de repo
+  en een bewuste beslissing; het stond niet in T20.
+- **De herkenningskwaliteit is alleen op gegenereerde afbeeldingen gemeten.** Vraag de
+  eigenaar vóór oplevering twintig echte verpakkingen te scannen en te noteren wat
+  eruit komt. Pas dan is er iets zinnigs te zeggen over hoe vaak dit werkt.
+- **Tesseract in Node laat een bestand achter.** Het proefscript downloadde
+  `eng.traineddata` (5 MB) naar de projectroot. Verwijderd, en de app zelf doet dit
+  nooit (die draait in de browser), maar een regel in `.gitignore` zou voorkomen dat
+  iemand het ooit per ongeluk commit.
+
+---
+
 ## [T19] Snel voorraad aanpassen — 2026-10-01
 **Status:** klaar voor review
 

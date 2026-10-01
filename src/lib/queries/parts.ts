@@ -17,6 +17,7 @@
 
 import { Prisma } from "@prisma/client";
 
+import { matchScannedText } from "@/lib/article-number";
 import { prisma } from "@/lib/db";
 import type { Category } from "@/lib/labels";
 import {
@@ -30,7 +31,10 @@ import type {
   PaginatedResult,
   PartDTO,
   PartSaleOptionDTO,
+  PartScanDTO,
+  PartScanMatchDTO,
   PartSort,
+  ScanSource,
   SortDir,
 } from "./types";
 
@@ -516,6 +520,138 @@ export async function searchPartsForSale(
       salePriceExcl: priceExclVat(salePriceIncl, vatRate),
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Scannen (T20)
+// ---------------------------------------------------------------------------
+
+/** Maximaal aantal kandidaten dat het scanscherm te zien krijgt. */
+export const MAX_SCAN_MATCHES = 5;
+
+/**
+ * Kolommen die het scanscherm nodig heeft. Klein gehouden, want hieronder worden
+ * ALLE actieve onderdelen gelezen — zie de toelichting bij
+ * {@link findPartsByScannedText}.
+ */
+const SCAN_SELECT = {
+  id: true,
+  name: true,
+  category: true,
+  sku: true,
+  barcode: true,
+  supplierArticleNumber: true,
+  location: true,
+  stockQuantity: true,
+  minStock: true,
+  salePriceIncl: true,
+  vatRate: true,
+  archivedAt: true,
+  brand: { select: { name: true } },
+} satisfies Prisma.PartSelect;
+
+type ScanRow = Prisma.PartGetPayload<{ select: typeof SCAN_SELECT }>;
+
+function toPartScanDTO(row: ScanRow): PartScanDTO {
+  const salePriceIncl = toNumber(row.salePriceIncl);
+  const vatRate = toNumber(row.vatRate);
+
+  return {
+    id: row.id,
+    name: row.name,
+    brandName: row.brand?.name ?? null,
+    category: row.category as Category,
+    sku: row.sku,
+    barcode: row.barcode,
+    supplierArticleNumber: row.supplierArticleNumber,
+    location: row.location,
+    stockQuantity: row.stockQuantity,
+    minStock: row.minStock,
+    isLowStock: isLowStock(row.stockQuantity, row.minStock),
+    salePriceIncl,
+    vatRate,
+    salePriceExcl: priceExclVat(salePriceIncl, vatRate),
+    archivedAt: toIso(row.archivedAt),
+  };
+}
+
+/**
+ * Zoekt de onderdelen die bij een gescande tekst horen (T20).
+ *
+ * De tekst komt óf van een barcode (`source: "barcode"`), óf van de
+ * tekstherkenning op een verpakking (`"ocr"`), óf uit het tekstveld waarin de
+ * gebruiker een slecht gelezen nummer verbeterde (`"manual"`).
+ *
+ * ### Waarom het matchen NIET in SQL gebeurt
+ * De normalisatie vouwt O/0, I/1/l, S/5, B/8 en Z/2 samen en gooit scheidingstekens
+ * weg. In SQL zou dat een stapel genest `REPLACE(UPPER(...))` per kolom worden,
+ * waarmee elke index onbruikbaar wordt (de database moet dan tóch elke rij
+ * aanraken), de regels op twee plekken zouden staan — in TypeScript voor de tests en
+ * in SQL voor de query — en ze onvermijdelijk uit elkaar gaan lopen. Daarom leest
+ * deze functie de nummers van alle ACTIEVE onderdelen (twaalf kleine kolommen, geen
+ * relaties behalve de merknaam) en laat ze `matchScannedText()` het werk doen: één
+ * stel regels, puur, getest.
+ *
+ * De afweging is dezelfde als bij het sorteren op marge hierboven: voor het
+ * assortiment van één winkel (duizenden onderdelen) is dat verwaarloosbaar. Loopt
+ * dat ooit in de tienduizenden, dan is de volgende stap een opgeslagen,
+ * genormaliseerde zoekkolom met index — niet ruwe SQL in de datalaag.
+ *
+ * Gearchiveerde onderdelen doen niet mee (SPEC §3 regel 4): hun voorraad mag niet
+ * gewijzigd worden, dus ze als kandidaat aanbieden zou de gebruiker een scherm in
+ * sturen waar niets kan.
+ */
+export async function findPartsByScannedText(
+  text: string,
+  source: ScanSource,
+  limit: number = MAX_SCAN_MATCHES,
+): Promise<PartScanMatchDTO[]> {
+  const value = text?.trim();
+  if (!value) {
+    return [];
+  }
+
+  const rows = await prisma.part.findMany({
+    where: { archivedAt: null },
+    select: SCAN_SELECT,
+    orderBy: [{ name: "asc" }, { id: "asc" }],
+  });
+
+  const matches = matchScannedText(value, rows, {
+    limit: Math.max(1, Math.min(limit, MAX_SCAN_MATCHES)),
+    // Een barcode is een complete code: die hoort exact of (na normalisatie)
+    // precies te matchen, nooit "zit ergens in". Zie `matchScannedText`.
+    exactOnly: source === "barcode",
+  });
+
+  return matches.map((match) => ({
+    part: toPartScanDTO(match.candidate),
+    field: match.field,
+    value: match.value,
+    kind: match.kind,
+  }));
+}
+
+/**
+ * Eén onderdeel in de scanvorm, op id. Gebruikt nadat de gebruiker een kandidaat
+ * bevestigd heeft en het snel-aanpassen-scherm met een VERSE voorraadstand geopend
+ * moet worden — de stand uit de scan kan dan al tientallen seconden oud zijn.
+ *
+ * Geeft `null` voor een onbekend of gearchiveerd onderdeel.
+ */
+export async function getPartForScanById(
+  id: string,
+): Promise<PartScanDTO | null> {
+  if (!id) {
+    return null;
+  }
+
+  const row = await prisma.part.findFirst({
+    where: { id, archivedAt: null },
+    select: SCAN_SELECT,
+  });
+
+  return row ? toPartScanDTO(row) : null;
 }
 
 // ---------------------------------------------------------------------------

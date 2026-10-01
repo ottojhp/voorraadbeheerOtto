@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 // Alleen types: deze imports verdwijnen bij het compileren, dus @zxing belandt
 // NIET in de initiële bundle. De code zelf wordt pas geladen met een dynamische
@@ -81,6 +82,33 @@ export interface BarcodeScannerProps {
   formats?: readonly BarcodeFormatName[];
   /** Titel in de kop van het scannerscherm. */
   title?: string;
+  /**
+   * De tekst onder het richtkader, als de standaardtekst niet past. Toegevoegd voor
+   * T20: het scanscherm voor artikelnummers moet daar zijn eigen voortgang kunnen
+   * melden ("Tekstherkenning laden…", "Tekst lezen…"), want die stap duurt de
+   * eerste keer merkbaar lang. Bij `undefined` blijft de oorspronkelijke tekst
+   * staan. Alleen zichtbaar zolang er geen camerafout is.
+   */
+  hint?: ReactNode;
+  /**
+   * Extra bedieningselementen onder de statustekst, binnen duimbereik. Ook voor
+   * T20: het scanscherm zet daar een "Lees nu"-knop, zodat de gebruiker zelf het
+   * moment kiest waarop hij de telefoon stilhoudt. Buiten de `aria-live`-regio van
+   * de statustekst, anders leest een schermlezer de knop bij elke statuswijziging
+   * opnieuw voor.
+   */
+  footer?: ReactNode;
+  /**
+   * Wordt aangeroepen met het `<video>`-element zodra het beeld loopt, en met
+   * `null` zodra de camera stopt.
+   *
+   * Toegevoegd voor T20, zodat de tekstherkenning frames uit DEZELFDE stream kan
+   * halen als de barcodedetectie. Een tweede `getUserMedia` zou een tweede stream
+   * openen — op een telefoon lukt dat vaak niet, en als het lukt kost het dubbel
+   * zoveel batterij. Het element blijft eigendom van dit component: de aanroeper
+   * mag eruit lezen, maar nooit de stream stoppen of `srcObject` aanpassen.
+   */
+  onVideoReady?: (video: HTMLVideoElement | null) => void;
 }
 
 type ScannerStatus = "starting" | "scanning" | "error";
@@ -90,6 +118,11 @@ type ScannerStatus = "starting" | "scanning" | "error";
  * browser die heeft (snel pad, Android/Chrome) en valt anders terug op
  * `@zxing/browser` (o.a. Safari op iOS). Alle meldingen zijn Nederlands en
  * wijzen bij problemen naar handmatig invoeren.
+ *
+ * Sinds T20 kan een aanroeper meelezen in dezelfde camerastream (`onVideoReady`) en
+ * de tekst onder het richtkader overschrijven (`hint`). Dat is bewust additief: het
+ * barcodepad zelf is niet veranderd, en wie die twee props niet meegeeft, krijgt
+ * exact het gedrag van T10. Zie `@/components/TextScanner` voor het gebruik.
  *
  * Gebruik:
  * ```tsx
@@ -107,6 +140,9 @@ export function BarcodeScanner({
   onClose,
   formats = DEFAULT_BARCODE_FORMATS,
   title = "Barcode scannen",
+  hint,
+  footer,
+  onVideoReady,
 }: BarcodeScannerProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
@@ -116,6 +152,12 @@ export function BarcodeScanner({
   useEffect(() => {
     onScanRef.current = onScan;
   }, [onScan]);
+
+  // Zelfde reden als bij `onScanRef`: deze callback mag de camera niet herstarten.
+  const onVideoReadyRef = useRef(onVideoReady);
+  useEffect(() => {
+    onVideoReadyRef.current = onVideoReady;
+  }, [onVideoReady]);
 
   const [status, setStatus] = useState<ScannerStatus>("starting");
   const [errorCode, setErrorCode] = useState<CameraErrorCode | null>(null);
@@ -178,6 +220,9 @@ export function BarcodeScanner({
       if (video.srcObject) {
         video.srcObject = null;
       }
+      // Meteen melden dat er geen beeld meer is, zodat een meelezende
+      // tekstherkenning (T20) stopt met frames pakken uit een dode stream.
+      onVideoReadyRef.current?.(null);
     };
 
     const fail = (code: CameraErrorCode) => {
@@ -363,6 +408,9 @@ export function BarcodeScanner({
           }
         }
         setStatus("scanning");
+        // Het beeld loopt: een meelezende tekstherkenning (T20) mag nu frames uit
+        // deze stream halen. Het element blijft van dit component.
+        onVideoReadyRef.current?.(video);
       } catch (error) {
         if (cancelled) {
           stopEverything();
@@ -482,10 +530,18 @@ export function BarcodeScanner({
 
       <div className="px-4 pb-6 pt-3 text-center">
         <p aria-live="polite" className="min-h-[24px] text-sm text-white">
-          {status === "starting" && "Camera starten…"}
-          {status === "scanning" && "Richt op de streepjescode"}
-          {status === "error" && "Camera niet beschikbaar"}
+          {status === "error"
+            ? "Camera niet beschikbaar"
+            : (hint ??
+              (status === "starting"
+                ? "Camera starten…"
+                : "Richt op de streepjescode"))}
         </p>
+        {status !== "error" && footer !== undefined && (
+          <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+            {footer}
+          </div>
+        )}
       </div>
     </div>
   );

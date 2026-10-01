@@ -42,6 +42,7 @@ import {
   STOCK_MUTATION_REASON_LABELS,
   type ManualStockReason,
 } from "@/lib/labels";
+import type { StockAdjustmentResultDTO } from "@/lib/queries/types";
 import type { StockAdjustmentInput } from "@/lib/validation/stock";
 
 import { adjustStockAction } from "./stock-actions";
@@ -106,6 +107,18 @@ export interface StockStepperProps {
   /** Gearchiveerd onderdeel: wijzigen mag niet meer (SPEC §3 regel 4). */
   disabled?: boolean;
   className?: string;
+  /**
+   * Wordt aangeroepen met het resultaat van elke GESLAAGDE wijziging.
+   *
+   * Toegevoegd in T20 en alleen nodig als de omliggende pagina GEEN server component
+   * is. Op `/onderdelen` en `/onderdelen/[id]` komt `stockQuantity` uit een verse
+   * serverrender en zorgt de `revalidatePath` in `adjustStockAction` ervoor dat de
+   * optimistische stand op de echte waarde landt. Het scanscherm houdt het onderdeel
+   * in client-state: daar moet die state meebewegen, anders springt de stand na het
+   * bijboeken terug naar de waarde van vóór de scan. Weglaten verandert niets aan
+   * het bestaande gedrag.
+   */
+  onAdjusted?: (result: StockAdjustmentResultDTO) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -120,7 +133,15 @@ export function StockStepper({
   variant = "compact",
   disabled = false,
   className = "",
+  onAdjusted,
 }: StockStepperProps) {
+  // Via een ref, zodat een aanroeper die bij elke render een nieuwe functie
+  // doorgeeft niets herstart.
+  const onAdjustedRef = useRef(onAdjusted);
+  useEffect(() => {
+    onAdjustedRef.current = onAdjusted;
+  }, [onAdjusted]);
+
   const [optimisticStock, addPendingChange] = useOptimistic<
     number,
     PendingStockChange
@@ -178,6 +199,10 @@ export function StockStepper({
 
       if (outcome.ok) {
         setFeedback({ kind: "success", result: outcome.result });
+        // Nog BINNEN de transitie: zo landt een nieuwe `stockQuantity` van de
+        // aanroeper in dezelfde render waarin de optimistische wijziging vervalt,
+        // en flikkert de stand niet even terug naar de oude waarde.
+        onAdjustedRef.current?.(outcome.result);
       } else {
         setFeedback({ kind: "error", message: outcome.message });
       }

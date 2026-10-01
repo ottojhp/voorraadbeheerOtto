@@ -38,3 +38,6 @@ next-env.d.ts
 
 # lokale dev-serverconfig met machine-specifieke paden
 .claude/launch.json
+
+# tesseract.js legt het taalmodel (5 MB) in de projectroot bij gebruik in Node
+*.traineddata
