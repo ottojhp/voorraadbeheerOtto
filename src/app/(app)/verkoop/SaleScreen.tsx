@@ -209,7 +209,7 @@ export function SaleScreen({
             htmlFor="sale-search"
             className="text-sm font-medium text-gray-700"
           >
-            Zoek op naam, artikelnummer of barcode
+            Zoek op naam, artikelnummer, leveranciersnummer of barcode
           </label>
           <input
             ref={searchInputRef}

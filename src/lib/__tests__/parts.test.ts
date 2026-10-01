@@ -265,15 +265,28 @@ describe("buildPartWhere", () => {
     expect(buildPartWhere({ includeArchived: true })).toEqual({});
   });
 
-  it("zoekt case-insensitive op naam, sku, barcode en pasvorm", () => {
+  it("zoekt case-insensitive op naam, sku, barcode, leveranciersnummer en pasvorm", () => {
     const where = buildPartWhere({ search: "primavera" });
 
     expect(where.OR).toEqual([
       { name: { contains: "primavera", mode: "insensitive" } },
       { sku: { contains: "primavera", mode: "insensitive" } },
       { barcode: { contains: "primavera", mode: "insensitive" } },
+      { supplierArticleNumber: { contains: "primavera", mode: "insensitive" } },
       { fitsModels: { contains: "primavera", mode: "insensitive" } },
     ]);
+  });
+
+  it("vindt een onderdeel op (een stuk van) het leveranciersartikelnummer, ongeacht hoofdletters", () => {
+    // Zelfde nummer als in de fixture hierboven (PIA-4T-8412): zowel het hele nummer
+    // als een stuk ervan in kleine letters moet als `contains` + `insensitive` op
+    // `supplierArticleNumber` in de where terechtkomen (Prisma vertaalt dat naar
+    // ILIKE '%...%'; de echte database-uitkomst is apart gecontroleerd).
+    for (const term of ["PIA-4T-8412", "pia-4t", "8412"]) {
+      expect(buildPartWhere({ search: term }).OR).toContainEqual({
+        supplierArticleNumber: { contains: term, mode: "insensitive" },
+      });
+    }
   });
 
   it("trimt de zoekterm en negeert een lege of witruimte-zoekterm", () => {
@@ -281,6 +294,7 @@ describe("buildPartWhere", () => {
       { name: { contains: "rem", mode: "insensitive" } },
       { sku: { contains: "rem", mode: "insensitive" } },
       { barcode: { contains: "rem", mode: "insensitive" } },
+      { supplierArticleNumber: { contains: "rem", mode: "insensitive" } },
       { fitsModels: { contains: "rem", mode: "insensitive" } },
     ]);
 
@@ -340,6 +354,7 @@ describe("buildPartWhere", () => {
         { name: { contains: "olie", mode: "insensitive" } },
         { sku: { contains: "olie", mode: "insensitive" } },
         { barcode: { contains: "olie", mode: "insensitive" } },
+        { supplierArticleNumber: { contains: "olie", mode: "insensitive" } },
         { fitsModels: { contains: "olie", mode: "insensitive" } },
       ],
       brandId: null,
@@ -775,7 +790,7 @@ describe("searchPartsForSale", () => {
     ]);
   });
 
-  it("zoekt op naam, sku en barcode, zonder gearchiveerde onderdelen", async () => {
+  it("zoekt op naam, sku, barcode en leveranciersnummer, zonder gearchiveerde onderdelen", async () => {
     prismaMock.part.findMany.mockResolvedValue([]);
 
     await searchPartsForSale("rem", 5);
@@ -787,9 +802,20 @@ describe("searchPartsForSale", () => {
         { name: { contains: "rem", mode: "insensitive" } },
         { sku: { contains: "rem", mode: "insensitive" } },
         { barcode: { contains: "rem", mode: "insensitive" } },
+        { supplierArticleNumber: { contains: "rem", mode: "insensitive" } },
       ],
     });
     expect(args.take).toBe(5);
+  });
+
+  it("zoekt in het verkoopscherm ook op het leveranciersnummer van de verpakking", async () => {
+    prismaMock.part.findMany.mockResolvedValue([]);
+
+    await searchPartsForSale("  pia-4t-84 ");
+
+    expect(prismaMock.part.findMany.mock.calls[0][0].where.OR).toContainEqual({
+      supplierArticleNumber: { contains: "pia-4t-84", mode: "insensitive" },
+    });
   });
 
   it("begrenst het aantal suggesties", async () => {

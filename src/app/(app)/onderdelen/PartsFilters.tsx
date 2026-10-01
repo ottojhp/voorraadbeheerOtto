@@ -153,7 +153,7 @@ export function PartsFilters({
           <Input
             id="onderdelen-zoeken"
             label="Zoeken"
-            placeholder="Naam, sku, barcode of pasvorm…"
+            placeholder="Naam, sku, barcode, lev.nr. of pasvorm…"
             value={searchInput}
             onChange={(event) => handleSearchChange(event.target.value)}
           />

@@ -168,7 +168,7 @@ export function toPartDTO(part: PartRecord): PartDTO {
 // ---------------------------------------------------------------------------
 
 export interface ListPartsParams {
-  /** Vrije zoekterm; case-insensitive substring op naam, sku, barcode en pasvorm. */
+  /** Vrije zoekterm; case-insensitive substring op naam, sku, barcode, leveranciersnummer en pasvorm. */
   search?: string;
   /** Filter op één merk. Wordt genegeerd als `brandIsNull` aan staat. */
   brandId?: string;
@@ -215,6 +215,9 @@ export function buildPartWhere(params: ListPartsParams): Prisma.PartWhereInput {
       { name: { contains: search, mode: "insensitive" } },
       { sku: { contains: search, mode: "insensitive" } },
       { barcode: { contains: search, mode: "insensitive" } },
+      // Het nummer van de leverancier/fabrikant: hetzelfde veld dat het scanscherm
+      // (T20) gebruikt, zodat typen en scannen dezelfde onderdelen vinden.
+      { supplierArticleNumber: { contains: search, mode: "insensitive" } },
       { fitsModels: { contains: search, mode: "insensitive" } },
     ];
   }
@@ -457,8 +460,10 @@ export async function findPartByBarcode(
 }
 
 /**
- * Zoeksuggesties voor het verkoopscherm (SPEC §F4): naam, sku of barcode,
- * case-insensitive, alleen niet-gearchiveerde onderdelen. Pasvorm (`fitsModels`) doet
+ * Zoeksuggesties voor het verkoopscherm (SPEC §F4): naam, sku, barcode of
+ * leveranciersartikelnummer (aan de balie pak je net zo goed de verpakking erbij, en
+ * het scanscherm vindt op dat nummer ook), case-insensitive, alleen
+ * niet-gearchiveerde onderdelen. Pasvorm (`fitsModels`) doet
  * hier bewust NIET mee — aan de balie zoek je het artikel zelf, en een vrij
  * pasvormveld levert daar vooral ruis op. Het voorraadoverzicht (T07) zoekt wél op
  * pasvorm.
@@ -486,6 +491,7 @@ export async function searchPartsForSale(
         { name: { contains: value, mode: "insensitive" } },
         { sku: { contains: value, mode: "insensitive" } },
         { barcode: { contains: value, mode: "insensitive" } },
+        { supplierArticleNumber: { contains: value, mode: "insensitive" } },
       ],
     },
     select: {

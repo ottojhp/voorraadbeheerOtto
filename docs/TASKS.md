@@ -190,7 +190,7 @@ groepering per merk en lage-voorraadmarkering.
 **Acceptatiecriteria**
 - [ ] Tabel toont naam, merk, categorie, sku, inkoopprijs, verkoopprijs excl. btw met
       de incl.-prijs erbij, marge (€ en %), voorraad, minimumvoorraad en leverancier.
-- [ ] Zoekveld filtert op naam, sku, barcode en pasvorm; filterstatus staat in de URL zodat de
+- [ ] Zoekveld filtert op naam, sku, barcode, leveranciersartikelnummer en pasvorm; filterstatus staat in de URL zodat de
       pagina deelbaar en herlaadbaar is.
 - [ ] Filteren op merk, op categorie, op leverancier en op "alleen lage voorraad"
       werkt en is combineerbaar met zoeken; merkloze onderdelen zijn apart filterbaar.

@@ -211,7 +211,8 @@ Alle bedragen exclusief btw, tenzij expliciet anders vermeld.
 ### F2 — Voorraadoverzicht (`/onderdelen`)
 - Tabel met: naam, merk, categorie, sku, inkoopprijs, verkoopprijs (excl. btw, met
   incl.-prijs erbij), marge (€ en %), voorraad, minimumvoorraad, leverancier.
-- Zoeken op naam, sku, barcode en pasvorm (`fitsModels`), case-insensitive, substring.
+- Zoeken op naam, sku, barcode, leveranciersartikelnummer (`supplierArticleNumber`) en
+  pasvorm (`fitsModels`), case-insensitive, substring.
 - Filteren op merk, op categorie, op leverancier en op "alleen lage voorraad".
 - Onderdelen zonder merk (universeel) zijn vindbaar via een eigen filterwaarde.
 - Sorteren op naam, voorraad, marge.

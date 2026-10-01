@@ -62,7 +62,7 @@ function toSaleOption(part: PartDTO): PartSaleOptionDTO {
  * (`@/lib/queries/parts`) en geeft plain DTO's door aan `SaleScreen`. De
  * schermtoestand staat in de URL:
  *
- * - `?q=` — zoekterm (naam, sku of barcode, alleen niet-gearchiveerde onderdelen);
+ * - `?q=` — zoekterm (naam, sku, barcode of leveranciersnummer, alleen niet-gearchiveerde onderdelen);
  * - `?scan=` — zojuist gescande code; precies één match selecteert direct, anders
  *   komt de code terug in een melding;
  * - `?partId=` — het gekozen onderdeel; de voorraad die de balie ziet komt zo bij

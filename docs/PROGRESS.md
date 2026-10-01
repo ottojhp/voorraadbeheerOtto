@@ -6,6 +6,43 @@ in `docs/TASKS.md`.
 
 Nieuwste notitie bovenaan.
 
+## [FIX] Leveranciersartikelnummer doorzoekbaar gemaakt — 2026-10-01
+**Status:** klaar voor review
+**Gewijzigde bestanden:** src/lib/queries/parts.ts,
+src/app/(app)/onderdelen/PartsFilters.tsx, src/app/(app)/verkoop/SaleScreen.tsx,
+src/app/(app)/verkoop/page.tsx (alleen commentaar), src/lib/__tests__/parts.test.ts,
+docs/PROGRESS.md
+**Wat is gebouwd:** `supplierArticleNumber` zit nu in de `OR` van `buildPartWhere`
+(case-insensitive substring, zoals de andere velden) en in `searchPartsForSale`. Wie het
+nummer van de verpakking typt vindt dus hetzelfde onderdeel als met de camera (T20),
+zowel op `/onderdelen` als in het verkoopscherm. De placeholder van het zoekveld is nu
+"Naam, sku, barcode, lev.nr. of pasvorm…" en het label in het verkoopscherm "Zoek op
+naam, artikelnummer, leveranciersnummer of barcode". `buildPartWhere` voedt ook de
+lage-voorraad-voorwaarde van het dashboard; daar is `search` nooit gezet, dus geen effect.
+**Keuzes en afwijkingen:** (1) Verkoopscherm: wel meegenomen, het is één regel in een
+bestaande `OR` zonder nieuwe code. Het scanpad op `/verkoop` (`?scan=`) gebruikt
+`searchPartsForSale` als terugval en selecteert bij precies één treffer direct; die terugval
+vindt nu dus ook een code die het leveranciersnummer is, wat gewenst is. (2) De korte
+placeholder "lev.nr." in plaats van "leveranciersnr.": de langere tekst werd op 375px
+afgekapt ("...of pasv"), gemeten in de browser; de korte past. (3) De bestaande tests met
+een exacte `toEqual` op de `OR`-lijst (3x `buildPartWhere`, 1x `searchPartsForSale`) hebben
+het extra element gekregen; geen assertie is losgelaten of afgezwakt, alle oude
+elementen staan er nog en in dezelfde volgorde.
+**Bewust niet gedaan:** `docs/SPEC.md` §F2 ("naam, sku, barcode en pasvorm") en de
+taakomschrijvingen in `docs/TASKS.md` niet aangepast (projectmanager). De observatie uit
+T20 over dit gat staat nog onder Nieuwe wensen en kan daar afgevinkt worden.
+**Verificatie:** zie de eindmelding van de bouwsessie; `tsc` 0 fouten, `vitest` 461/461
+(459 bestaand + 2 nieuw), `eslint` schoon, `next build` ok. Echte test tegen de lokale
+database met een sessiecookie uit `createSessionValue()`: `/onderdelen?search=PEU-AF-72310`
+en `?search=af-723` (kleine letters, stuk van het nummer) tonen alleen "Luchtfilter" (naam
+en sku bevatten die tekst niet); `?search=PIA-4T-84` toont beide remblokkensets; een
+onzintekst geeft de lege-toestand. `/verkoop?q=af-723` toont Luchtfilter. Placeholder
+bekeken op 375px breed, past zonder afkappen.
+**Openstaand / risico's:** de unit-tests bewijzen de `where` (mock-Prisma), niet de
+SQL; dat bewijs is de echte test tegen de database. Er is geen index op
+`supplierArticleNumber`; bij `ILIKE '%…%'` helpt een gewone index toch niet en bij deze
+tabelgrootte is dat geen probleem.
+
 ## [T20] Artikelnummer scannen met tekstherkenning — 2026-10-01
 **Status:** klaar voor review
 
